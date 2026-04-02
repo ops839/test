@@ -57,6 +57,8 @@ const ACTIVE_CLIENTS = [
 // Pre-sort by length descending so longer names match first
 const ACTIVE_CLIENTS_SORTED = [...ACTIVE_CLIENTS].sort((a, b) => b.length - a.length);
 
+export { KNOWN_BM_MEMBERS, ACTIVE_CLIENTS_SORTED };
+
 function isNotetaker(entry) {
   return /notetaker/i.test(entry);
 }

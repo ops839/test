@@ -4,6 +4,8 @@ import GoogleAuth from './components/GoogleAuth';
 import ProcessingLog from './components/ProcessingLog';
 import Stats from './components/Stats';
 import Settings, { loadSettings } from './components/Settings';
+import ErrorAnalysis from './components/ErrorAnalysis';
+import DownloadLog from './components/DownloadLog';
 import { parseSybillMessages } from './lib/parser';
 import { classifyMeeting } from './lib/classifier';
 import { uploadMeeting, resetSheetCache } from './lib/sheets';
@@ -69,6 +71,7 @@ export default function App() {
           client: null,
           status: 'skipped',
           detail: 'internal',
+          attendees: meeting.attendees || '',
         });
         setStats({ ...newStats });
         continue;
@@ -79,6 +82,7 @@ export default function App() {
         title: meeting.title || '(untitled)',
         client: clientName,
         status: 'processing',
+        attendees: meeting.attendees || '',
       });
 
       try {
@@ -181,6 +185,13 @@ export default function App() {
 
         <Stats stats={stats} />
         <ProcessingLog logs={logs} />
+
+        {!processing && logs.length > 0 && (
+          <section className="flex items-center gap-3">
+            <ErrorAnalysis logs={logs} />
+            <DownloadLog logs={logs} />
+          </section>
+        )}
       </main>
 
       <footer className="text-center text-xs text-gray-400 py-6">
