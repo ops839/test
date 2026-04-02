@@ -40,6 +40,46 @@ const BLU_MOUNTAIN_FIRST_NAMES = new Set([
 
 const FEEDER_AGENCIES = ['liger', 'infinite renewals'];
 
+const ACTIVE_CLIENTS = [
+  'Infinite Renewals',
+  'Accelerated Analytics',
+  'Athena',
+  'August Health',
+  'Blu Sky',
+  'Bushel',
+  'Custom GPT',
+  'Cybernut',
+  'Hall Street 3PL',
+  'Jencap',
+  'MiniCo',
+  'Maxa Designs',
+  'Milrose',
+  'Numa',
+  'Polar Analytics',
+  'Poppins Payroll',
+  'Productside',
+  'Razor Metrics',
+  'RebelIQ',
+  'Select Exterminating',
+  'Shoplift',
+  'SSA Group',
+  'Simpl',
+  'The Estate Lawyers',
+  'Transcom',
+  'Trnsact',
+  'Wisconsin Carports',
+  'Zeitcaster',
+];
+
+function decodeHtmlEntities(str) {
+  if (!str) return str;
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"');
+}
+
 function parseAttendeeList(attendeesStr) {
   if (!attendeesStr) return [];
   return attendeesStr
@@ -54,73 +94,98 @@ function getEmailDomain(str) {
   return null;
 }
 
-function isBluMountainMember(attendee) {
-  const lower = attendee.toLowerCase();
-  // Check email domain
-  const domain = getEmailDomain(lower);
-  if (domain === 'blumountain.me') return true;
-  // Check name match
-  return BLU_MOUNTAIN_NAMES.some(
-    (name) => lower.includes(name)
-  );
-}
-
-function isPersonalEmail(attendee) {
-  const domain = getEmailDomain(attendee);
-  return domain ? PERSONAL_DOMAINS.has(domain) : false;
-}
-
 function hasExternalBusiness(attendee) {
   const domain = getEmailDomain(attendee);
-  if (!domain) return false; // No email — can't confirm external
+  if (!domain) return false;
   if (domain === 'blumountain.me') return false;
   if (PERSONAL_DOMAINS.has(domain)) return false;
   return true;
 }
 
-export function classifyMeeting(meeting) {
-  const attendees = parseAttendeeList(meeting.attendees);
+function extractExternalDomain(attendee) {
+  const domain = getEmailDomain(attendee);
+  if (!domain) return null;
+  if (domain === 'blumountain.me') return null;
+  if (PERSONAL_DOMAINS.has(domain)) return null;
+  return domain;
+}
 
-  const hasBluMountain = attendees.some(isBluMountainMember);
-  const hasExternal = attendees.some(hasExternalBusiness);
-
-  // Signal 1: attendee emails confirm external
-  if (hasBluMountain && hasExternal) {
-    const clientName = extractClientName(meeting.title);
-    if (clientName) {
-      return { type: 'external', clientName };
-    }
-  }
-
-  // Signal 2: title contains a non-BM company name via <> or : patterns
-  const titleClient = extractClientFromTitle(meeting.title);
-  if (titleClient) {
-    return { type: 'external', clientName: titleClient };
-  }
-
-  return { type: 'internal', clientName: null };
+function domainToName(domain) {
+  // "acme.com" → "acme", "hall-street.io" → "hall-street"
+  return domain.split('.')[0];
 }
 
 function isBluMountainFirstName(str) {
-  // Check if every word in the string is a known BM first name
   const words = str.toLowerCase().trim().split(/\s+/);
   return words.length > 0 && words.every((w) => BLU_MOUNTAIN_FIRST_NAMES.has(w));
 }
 
-function isFeederAgency(str) {
+function isBluMountainName(str) {
   const lower = str.toLowerCase().trim();
-  return FEEDER_AGENCIES.some((a) => lower.includes(a));
+  return BLU_MOUNTAIN_NAMES.some((name) => lower === name || lower.includes(name));
 }
 
-function extractClientFromTitle(title) {
+/**
+ * Priority 1: Check if meeting title contains a known active client name.
+ * Handles feeder agency logic: if Infinite Renewals or Liger appears alongside
+ * another client, the other client is the customer. If a feeder agency appears
+ * alone, treat it as the client (only Infinite Renewals is on the active list).
+ */
+function matchActiveClient(title) {
   if (!title) return null;
+  const decoded = decodeHtmlEntities(title);
+  const titleLower = decoded.toLowerCase();
 
-  const titleLower = title.toLowerCase();
-
-  // Apply feeder agency rules first
+  // Check feeder agency + other client combo first
   for (const agency of FEEDER_AGENCIES) {
     if (titleLower.includes(agency)) {
-      const ampersandMatch = title.match(/^([^&]+)\s*&\s*([^:]+)/);
+      // Look for another active client in the same title
+      const otherClient = ACTIVE_CLIENTS.find((c) => {
+        const cLower = c.toLowerCase();
+        return cLower !== agency && titleLower.includes(cLower);
+      });
+      if (otherClient) return otherClient;
+      // No other client found — if the agency itself is an active client, use it
+      // (Infinite Renewals is both feeder agency and client)
+    }
+  }
+
+  // Match any active client by case-insensitive partial match
+  // Sort by length descending so longer names match first (e.g. "Hall Street 3PL" before "Hall")
+  const sorted = [...ACTIVE_CLIENTS].sort((a, b) => b.length - a.length);
+  for (const client of sorted) {
+    if (titleLower.includes(client.toLowerCase())) {
+      return client;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Priority 2: Infer customer from external attendee email domains.
+ */
+function matchByAttendeeDomain(attendees) {
+  for (const attendee of attendees) {
+    const domain = extractExternalDomain(attendee);
+    if (domain) return domainToName(domain);
+  }
+  return null;
+}
+
+/**
+ * Fallback: extract client from title patterns (<> or :) when no active client
+ * matched and no external domain found.
+ */
+function extractClientFromTitlePatterns(title) {
+  if (!title) return null;
+  const decoded = decodeHtmlEntities(title);
+  const titleLower = decoded.toLowerCase();
+
+  // Feeder agency with ampersand pattern
+  for (const agency of FEEDER_AGENCIES) {
+    if (titleLower.includes(agency)) {
+      const ampersandMatch = decoded.match(/^([^&]+)\s*&\s*([^:]+)/);
       if (ampersandMatch) {
         const left = ampersandMatch[1].trim();
         const right = ampersandMatch[2].trim();
@@ -131,8 +196,8 @@ function extractClientFromTitle(title) {
     }
   }
 
-  // Pattern: "[Client] <> ..."
-  const separatorMatch = title.match(/^(.+?)\s*<>\s*/);
+  // "[Client] <> ..."
+  const separatorMatch = decoded.match(/^(.+?)\s*<>\s*/);
   if (separatorMatch) {
     const candidate = separatorMatch[1].trim();
     if (
@@ -143,14 +208,13 @@ function extractClientFromTitle(title) {
     }
   }
 
-  // Pattern: "[Client]: ..."
-  const colonMatch = title.match(/^([^:]+):/);
+  // "[Client]: ..."
+  const colonMatch = decoded.match(/^([^:]+):/);
   if (colonMatch) {
     const candidate = colonMatch[1].trim();
     if (
       !isBluMountainFirstName(candidate) &&
-      !isBluMountainName(candidate) &&
-      !isFeederAgency(candidate)
+      !isBluMountainName(candidate)
     ) {
       return candidate;
     }
@@ -159,55 +223,30 @@ function extractClientFromTitle(title) {
   return null;
 }
 
-function extractClientName(title) {
-  if (!title) return null;
+export function classifyMeeting(meeting) {
+  const title = decodeHtmlEntities(meeting.title);
+  const attendeesStr = decodeHtmlEntities(meeting.attendees);
+  const attendees = parseAttendeeList(attendeesStr);
 
-  // Apply feeder agency rules first
-  const titleLower = title.toLowerCase();
-
-  for (const agency of FEEDER_AGENCIES) {
-    if (titleLower.includes(agency)) {
-      // Pattern: "Agency & Client: topic" or "Client & Agency: topic"
-      // Find the other party
-      const ampersandMatch = title.match(/^([^&]+)\s*&\s*([^:]+)/);
-      if (ampersandMatch) {
-        const left = ampersandMatch[1].trim();
-        const right = ampersandMatch[2].trim();
-        if (left.toLowerCase().includes(agency)) {
-          return right;
-        }
-        return left;
-      }
-      // If no ampersand pattern, skip creating a tab for the agency
-      return null;
-    }
+  // Priority 1: known active client name in the meeting title
+  const activeClient = matchActiveClient(title);
+  if (activeClient) {
+    return { type: 'external', clientName: activeClient };
   }
 
-  // Pattern: "[Client] <> Blu Mountain [description]"
-  const separatorMatch = title.match(/^(.+?)\s*<>\s*/);
-  if (separatorMatch) {
-    const client = separatorMatch[1].trim();
-    if (client.toLowerCase() !== 'blu mountain') return client;
+  // Priority 2: external business email domain in attendees
+  const domainClient = matchByAttendeeDomain(attendees);
+  if (domainClient) {
+    // Try to get a better name from title patterns
+    const titleClient = extractClientFromTitlePatterns(title);
+    return { type: 'external', clientName: titleClient || domainClient };
   }
 
-  // Pattern: "[Client]: [description]"
-  const colonMatch = title.match(/^([^:]+):/);
-  if (colonMatch) {
-    const client = colonMatch[1].trim();
-    // Check if it's just a BM member name
-    if (isBluMountainName(client)) return null;
-    return client;
+  // Fallback: title patterns (<> or :) with non-BM names
+  const titleClient = extractClientFromTitlePatterns(title);
+  if (titleClient) {
+    return { type: 'external', clientName: titleClient };
   }
 
-  // Pattern: "[A] & [B]: [description]" already handled by colon match above
-
-  // Check if title is only BM member names
-  if (isBluMountainName(title)) return null;
-
-  return null;
-}
-
-function isBluMountainName(str) {
-  const lower = str.toLowerCase().trim();
-  return BLU_MOUNTAIN_NAMES.some((name) => lower === name || lower.includes(name));
+  return { type: 'internal', clientName: null };
 }
