@@ -31,18 +31,20 @@ export default function GoogleAuth({
       onAuthReady(signedIn);
       if (signedIn) loadSheets();
     });
-  }, [onAuthReady]);
 
-  const init = async () => {
-    if (!apiKey || !clientId) {
-      setError('Please enter API Key and Client ID in settings');
-      return;
+    // Auto-init on mount if credentials are available
+    if (apiKey && clientId) {
+      initOnMount(apiKey, clientId);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const initOnMount = async (key, cid) => {
     setIniting(true);
     setError(null);
     try {
-      await initGapi(apiKey);
-      await initGis(clientId);
+      await initGapi(key);
+      await initGis(cid);
       if (isSignedIn()) {
         setAuthed(true);
         onAuthReady(true);
@@ -53,6 +55,14 @@ export default function GoogleAuth({
     } finally {
       setIniting(false);
     }
+  };
+
+  const init = async () => {
+    if (!apiKey || !clientId) {
+      setError('Please enter API Key and Client ID in settings');
+      return;
+    }
+    await initOnMount(apiKey, clientId);
   };
 
   const loadSheets = async () => {

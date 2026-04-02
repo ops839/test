@@ -2,8 +2,10 @@
  * Google Sheets API integration using Google Identity Services + Sheets API v4.
  */
 
-const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.file';
+const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/drive.readonly';
 const DISCOVERY_DOC = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
+
+const TOKEN_KEY = 'sybill-google-token';
 
 let tokenClient = null;
 let gapiInited = false;
@@ -38,6 +40,22 @@ export async function initGapi(apiKey) {
     discoveryDocs: [DISCOVERY_DOC],
   });
   gapiInited = true;
+
+  // Restore saved token if available
+  try {
+    const saved = sessionStorage.getItem(TOKEN_KEY);
+    if (saved) {
+      const token = JSON.parse(saved);
+      // Check if token hasn't expired (expires_in is seconds from issue time)
+      if (token.expiry && Date.now() < token.expiry) {
+        window.gapi.client.setToken(token);
+      } else {
+        sessionStorage.removeItem(TOKEN_KEY);
+      }
+    }
+  } catch {
+    sessionStorage.removeItem(TOKEN_KEY);
+  }
 }
 
 export async function initGis(clientId) {
@@ -49,6 +67,12 @@ export async function initGis(clientId) {
       if (resp.error) {
         console.error('Auth error', resp);
         return;
+      }
+      // Persist token with expiry timestamp
+      const token = window.gapi.client.getToken();
+      if (token) {
+        token.expiry = Date.now() + (token.expires_in || 3600) * 1000;
+        sessionStorage.setItem(TOKEN_KEY, JSON.stringify(token));
       }
       gisInited = true;
       onAuthChange?.(true);
@@ -70,6 +94,7 @@ export function signOut() {
   if (token) {
     window.google.accounts.oauth2.revoke(token.access_token);
     window.gapi.client.setToken('');
+    sessionStorage.removeItem(TOKEN_KEY);
     onAuthChange?.(false);
   }
 }
