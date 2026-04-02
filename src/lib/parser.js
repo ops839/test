@@ -72,6 +72,7 @@ function extractAttendees(blocks) {
 }
 
 function decodeHtmlEntities(str) {
+  if (!str) return '';
   return str
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')

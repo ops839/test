@@ -6,7 +6,7 @@ import Stats from './components/Stats';
 import Settings, { loadSettings } from './components/Settings';
 import { parseSybillMessages } from './lib/parser';
 import { classifyMeeting } from './lib/classifier';
-import { uploadMeeting } from './lib/sheets';
+import { uploadMeeting, resetSheetCache } from './lib/sheets';
 
 export default function App() {
   const [settings, setSettings] = useState(loadSettings);
@@ -37,6 +37,7 @@ export default function App() {
     setProcessing(true);
     setLogs([]);
     abortRef.current = false;
+    resetSheetCache();
 
     const newStats = {
       totalFiles: files.length,

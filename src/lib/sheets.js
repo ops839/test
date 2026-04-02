@@ -150,17 +150,34 @@ async function appendRow(spreadsheetId, sheetTitle, row) {
 
 const HEADERS = ['Meeting Date', 'Meeting Name', 'Attendees', 'Summary', 'Action Items'];
 
+// Cache of known sheet names per spreadsheet to avoid redundant API calls
+const knownSheets = new Map();
+
+export function resetSheetCache() {
+  knownSheets.clear();
+}
+
+async function ensureSheetExists(spreadsheetId, sheetTitle) {
+  if (!knownSheets.has(spreadsheetId)) {
+    const names = await getSheetNames(spreadsheetId);
+    knownSheets.set(spreadsheetId, new Set(names));
+  }
+
+  const cached = knownSheets.get(spreadsheetId);
+  if (!cached.has(sheetTitle)) {
+    await addSheet(spreadsheetId, sheetTitle);
+    await appendRow(spreadsheetId, sheetTitle, HEADERS);
+    cached.add(sheetTitle);
+  }
+}
+
 export async function uploadMeeting(spreadsheetId, clientName, meeting) {
+  if (!clientName) throw new Error('No client name');
+
   // Sanitize sheet title (max 100 chars, no special chars that Sheets disallows)
   const sheetTitle = clientName.replace(/[\\/*?[\]:]/g, '').substring(0, 100);
 
-  const existingSheets = await getSheetNames(spreadsheetId);
-
-  if (!existingSheets.includes(sheetTitle)) {
-    await addSheet(spreadsheetId, sheetTitle);
-    // Add headers
-    await appendRow(spreadsheetId, sheetTitle, HEADERS);
-  }
+  await ensureSheetExists(spreadsheetId, sheetTitle);
 
   const row = [
     meeting.date,

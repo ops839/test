@@ -71,15 +71,6 @@ const ACTIVE_CLIENTS = [
   'Zeitcaster',
 ];
 
-function decodeHtmlEntities(str) {
-  if (!str) return str;
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"');
-}
-
 function parseAttendeeList(attendeesStr) {
   if (!attendeesStr) return [];
   return attendeesStr
@@ -133,8 +124,7 @@ function isBluMountainName(str) {
  */
 function matchActiveClient(title) {
   if (!title) return null;
-  const decoded = decodeHtmlEntities(title);
-  const titleLower = decoded.toLowerCase();
+  const titleLower = title.toLowerCase();
 
   // Check feeder agency + other client combo first
   for (const agency of FEEDER_AGENCIES) {
@@ -179,13 +169,12 @@ function matchByAttendeeDomain(attendees) {
  */
 function extractClientFromTitlePatterns(title) {
   if (!title) return null;
-  const decoded = decodeHtmlEntities(title);
-  const titleLower = decoded.toLowerCase();
+  const titleLower = title.toLowerCase();
 
   // Feeder agency with ampersand pattern
   for (const agency of FEEDER_AGENCIES) {
     if (titleLower.includes(agency)) {
-      const ampersandMatch = decoded.match(/^([^&]+)\s*&\s*([^:]+)/);
+      const ampersandMatch = title.match(/^([^&]+)\s*&\s*([^:]+)/);
       if (ampersandMatch) {
         const left = ampersandMatch[1].trim();
         const right = ampersandMatch[2].trim();
@@ -197,7 +186,7 @@ function extractClientFromTitlePatterns(title) {
   }
 
   // "[Client] <> ..."
-  const separatorMatch = decoded.match(/^(.+?)\s*<>\s*/);
+  const separatorMatch = title.match(/^(.+?)\s*<>\s*/);
   if (separatorMatch) {
     const candidate = separatorMatch[1].trim();
     if (
@@ -209,7 +198,7 @@ function extractClientFromTitlePatterns(title) {
   }
 
   // "[Client]: ..."
-  const colonMatch = decoded.match(/^([^:]+):/);
+  const colonMatch = title.match(/^([^:]+):/);
   if (colonMatch) {
     const candidate = colonMatch[1].trim();
     if (
@@ -224,9 +213,8 @@ function extractClientFromTitlePatterns(title) {
 }
 
 export function classifyMeeting(meeting) {
-  const title = decodeHtmlEntities(meeting.title);
-  const attendeesStr = decodeHtmlEntities(meeting.attendees);
-  const attendees = parseAttendeeList(attendeesStr);
+  const title = meeting.title || '';
+  const attendees = parseAttendeeList(meeting.attendees);
 
   // Priority 1: known active client name in the meeting title
   const activeClient = matchActiveClient(title);
