@@ -71,6 +71,14 @@ function extractAttendees(blocks) {
   return '';
 }
 
+function decodeHtmlEntities(str) {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"');
+}
+
 function tsToDate(ts) {
   const seconds = parseFloat(ts);
   const d = new Date(seconds * 1000);
@@ -83,9 +91,9 @@ function tsToDate(ts) {
 export function parseSybillMessages(jsonArray) {
   return jsonArray.filter(isSybillMessage).map((msg) => ({
     date: tsToDate(msg.ts),
-    title: extractTitle(msg.blocks),
-    summary: extractOutcome(msg.blocks),
-    actionItems: extractActionItems(msg.blocks),
-    attendees: extractAttendees(msg.blocks),
+    title: decodeHtmlEntities(extractTitle(msg.blocks)),
+    summary: decodeHtmlEntities(extractOutcome(msg.blocks)),
+    actionItems: decodeHtmlEntities(extractActionItems(msg.blocks)),
+    attendees: decodeHtmlEntities(extractAttendees(msg.blocks)),
   }));
 }
