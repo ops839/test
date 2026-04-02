@@ -6,11 +6,38 @@ const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googlea
 const DISCOVERY_DOC = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
 
 const TOKEN_KEY = 'sybill-google-token';
+const API_DELAY_MS = 500;
+const RETRY_DELAY_MS = 2000;
 
 let tokenClient = null;
 let gapiInited = false;
 let gisInited = false;
 let onAuthChange = null;
+let lastApiCall = 0;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function throttle() {
+  const now = Date.now();
+  const elapsed = now - lastApiCall;
+  if (elapsed < API_DELAY_MS) {
+    await sleep(API_DELAY_MS - elapsed);
+  }
+  lastApiCall = Date.now();
+}
+
+async function withRetry(fn) {
+  await throttle();
+  try {
+    return await fn();
+  } catch (err) {
+    await sleep(RETRY_DELAY_MS);
+    await throttle();
+    return await fn();
+  }
+}
 
 export function setAuthChangeCallback(cb) {
   onAuthChange = cb;
@@ -129,33 +156,28 @@ export async function createSpreadsheet(title) {
 }
 
 async function getSheetNames(spreadsheetId) {
-  const resp = await window.gapi.client.sheets.spreadsheets.get({
-    spreadsheetId,
-  });
+  const resp = await withRetry(() =>
+    window.gapi.client.sheets.spreadsheets.get({ spreadsheetId })
+  );
   return resp.result.sheets.map((s) => s.properties.title);
 }
 
 async function addSheet(spreadsheetId, sheetTitle) {
-  await window.gapi.client.sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    resource: {
-      requests: [
-        {
-          addSheet: {
-            properties: { title: sheetTitle },
-          },
-        },
-      ],
-    },
-  });
+  await withRetry(() =>
+    window.gapi.client.sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      resource: {
+        requests: [{ addSheet: { properties: { title: sheetTitle } } }],
+      },
+    })
+  );
 }
 
 async function getNextEmptyRow(spreadsheetId, sheetTitle) {
   const range = `'${sheetTitle}'!A:A`;
-  const resp = await window.gapi.client.sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range,
-  });
+  const resp = await withRetry(() =>
+    window.gapi.client.sheets.spreadsheets.values.get({ spreadsheetId, range })
+  );
   const values = resp.result.values || [];
   return values.length + 1;
 }
@@ -163,14 +185,14 @@ async function getNextEmptyRow(spreadsheetId, sheetTitle) {
 async function appendRow(spreadsheetId, sheetTitle, row) {
   const nextRow = await getNextEmptyRow(spreadsheetId, sheetTitle);
   const range = `'${sheetTitle}'!A${nextRow}`;
-  await window.gapi.client.sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range,
-    valueInputOption: 'RAW',
-    resource: {
-      values: [row],
-    },
-  });
+  await withRetry(() =>
+    window.gapi.client.sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      resource: { values: [row] },
+    })
+  );
 }
 
 const HEADERS = ['Meeting Date', 'Meeting Name', 'Attendees', 'Summary', 'Action Items'];
