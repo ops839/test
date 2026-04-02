@@ -232,30 +232,31 @@ export function classifyMeeting(meeting) {
   const attendees = parseAttendeeList(meeting.attendees);
   const hasExternal = attendees.some(hasExternalBusiness);
 
-  // Early exit: person-to-person <> titles with no external business attendees
-  if (isPersonToPersonTitle(title) && !hasExternal) {
+  // PRIMARY SIGNAL: attendee email domains determine internal vs external
+  if (!hasExternal) {
+    // All attendees are blumountain.me or personal email domains → INTERNAL
     return { type: 'internal', clientName: null };
   }
 
-  // Priority 1: known active client name in the meeting title
+  // Meeting is EXTERNAL — now determine the customer name
+  // Try active client list first (best match)
   const activeClient = matchActiveClient(title);
   if (activeClient) {
     return { type: 'external', clientName: activeClient };
   }
 
-  // Priority 2: external business email domain in attendees
-  const domainClient = matchByAttendeeDomain(attendees);
-  if (domainClient) {
-    // Try to get a better name from title patterns
-    const titleClient = extractClientFromTitlePatterns(title);
-    return { type: 'external', clientName: titleClient || domainClient };
-  }
-
-  // Fallback: title patterns (<> or :) with non-BM names
+  // Try title patterns (<> or :)
   const titleClient = extractClientFromTitlePatterns(title);
   if (titleClient) {
     return { type: 'external', clientName: titleClient };
   }
 
-  return { type: 'internal', clientName: null };
+  // Fall back to domain name
+  const domainClient = matchByAttendeeDomain(attendees);
+  if (domainClient) {
+    return { type: 'external', clientName: domainClient };
+  }
+
+  // External by email but can't determine client name
+  return { type: 'external', clientName: 'Unknown Client' };
 }
