@@ -45,11 +45,24 @@ function extractActionItems(blocks) {
   const block = blocks.find(
     (b) => b.block_id && b.block_id.startsWith('action_items$$')
   );
-  if (!block || !block.text || !block.text.text) return '';
+  if (!block) return '';
 
-  let text = block.text.text;
-  text = text.replace(/^\*Action Items\*\s*\n?/, '');
-  return text.trim();
+  // a) Standard: text field with bullet points
+  if (block.text && block.text.text) {
+    let text = block.text.text;
+    text = text.replace(/^\*Action Items\*\s*\n?/, '');
+    return text.trim();
+  }
+
+  // b) Checkbox accessory format: options array with text.text
+  if (block.accessory && block.accessory.type === 'checkboxes' && block.accessory.options) {
+    return block.accessory.options
+      .map((opt) => opt.text && opt.text.text ? opt.text.text : '')
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return '';
 }
 
 function extractAttendees(blocks) {

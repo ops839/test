@@ -12,7 +12,7 @@ const BLU_MOUNTAIN_NAMES = [
   'hala mostafa',
   'eman refaey',
   'mohamed abuzaid',
-  'seif',
+  'seif muhammed',
   'tarek',
   'omar',
   'mohamed nashat',
@@ -37,6 +37,10 @@ const BLU_MOUNTAIN_FIRST_NAMES = new Set([
   'johnny', 'abdallah', 'ahmed', 'kurt', 'kareem', 'salma',
   'hala', 'eman', 'mohamed', 'seif', 'tarek', 'omar', 'nashat', 'abuzaid',
   'edward', 'patrick',
+]);
+
+const BLU_MOUNTAIN_COMPANY_NAMES = new Set([
+  'blu mountain', 'blue mountain', 'blumountain',
 ]);
 
 const FEEDER_AGENCIES = ['liger', 'infinite renewals'];
@@ -72,44 +76,63 @@ const ACTIVE_CLIENTS = [
   'Zeitcaster',
 ];
 
-function parseAttendeeList(attendeesStr) {
+// ─── Attendee Parsing ────────────────────────────────────────────────
+
+/**
+ * Parse a raw attendee entry and return a structured object:
+ * { name, domain, company, signal: 'external'|'internal'|'unknown', skip: bool }
+ */
+function parseAttendee(raw) {
+  const entry = raw.trim();
+  if (!entry) return null;
+
+  // a) Skip notetaker bots
+  if (/notetaker/i.test(entry)) {
+    return { name: entry, domain: null, company: null, signal: 'skip', skip: true };
+  }
+
+  const name = entry.replace(/\s*\(.*\)\s*$/, '').trim();
+
+  // b) Check for domain in parentheses: (word.tld) where tld is 2-4 letters, no spaces
+  const domainMatch = entry.match(/\(([a-zA-Z0-9.-]+\.[a-zA-Z]{2,4})\)$/);
+  if (domainMatch) {
+    const domain = domainMatch[1].toLowerCase();
+    if (domain === 'blumountain.me') {
+      return { name, domain, company: null, signal: 'internal', skip: false };
+    }
+    if (PERSONAL_DOMAINS.has(domain)) {
+      return { name, domain, company: null, signal: 'internal', skip: false };
+    }
+    return { name, domain, company: null, signal: 'external', skip: false };
+  }
+
+  // c) Check for job title with "at Company": (... at Company) or (... at Company (FKA ...))
+  const atMatch = entry.match(/\([^)]*\bat\s+(.+?)\s*(?:\(FKA[^)]*\))?\s*\)$/i);
+  if (atMatch) {
+    let company = atMatch[1].trim();
+    // Strip trailing (FKA ...) if still present
+    company = company.replace(/\s*\(FKA[^)]*\)\s*$/i, '').trim();
+    const companyLower = company.toLowerCase();
+    if (BLU_MOUNTAIN_COMPANY_NAMES.has(companyLower)) {
+      return { name, domain: null, company, signal: 'internal', skip: false };
+    }
+    return { name, domain: null, company, signal: 'external', skip: false };
+  }
+
+  // d) No parenthetical — check if name matches known BM team member
+  if (isBluMountainName(name)) {
+    return { name, domain: null, company: null, signal: 'internal', skip: false };
+  }
+
+  return { name, domain: null, company: null, signal: 'unknown', skip: false };
+}
+
+function splitAttendees(attendeesStr) {
   if (!attendeesStr) return [];
   return attendeesStr
     .split(',')
-    .map((a) => a.trim())
-    .filter(Boolean);
-}
-
-function getEmailDomain(str) {
-  const emailMatch = str.match(/([^\s@]+@([^\s@)]+))/);
-  if (emailMatch) return emailMatch[2].toLowerCase();
-  return null;
-}
-
-function hasExternalBusiness(attendee) {
-  const domain = getEmailDomain(attendee);
-  if (!domain) return false;
-  if (domain === 'blumountain.me') return false;
-  if (PERSONAL_DOMAINS.has(domain)) return false;
-  return true;
-}
-
-function extractExternalDomain(attendee) {
-  const domain = getEmailDomain(attendee);
-  if (!domain) return null;
-  if (domain === 'blumountain.me') return null;
-  if (PERSONAL_DOMAINS.has(domain)) return null;
-  return domain;
-}
-
-function domainToName(domain) {
-  // "acme.com" → "acme", "hall-street.io" → "hall-street"
-  return domain.split('.')[0];
-}
-
-function isBluMountainFirstName(str) {
-  const words = str.toLowerCase().trim().split(/\s+/);
-  return words.length > 0 && words.every((w) => BLU_MOUNTAIN_FIRST_NAMES.has(w));
+    .map((a) => parseAttendee(a))
+    .filter((a) => a !== null);
 }
 
 function isBluMountainName(str) {
@@ -117,25 +140,100 @@ function isBluMountainName(str) {
   return BLU_MOUNTAIN_NAMES.some((name) => lower === name || lower.includes(name));
 }
 
+function isBluMountainFirstName(str) {
+  const words = str.toLowerCase().trim().split(/\s+/);
+  return words.length > 0 && words.every((w) => BLU_MOUNTAIN_FIRST_NAMES.has(w));
+}
+
+// ─── Customer Name Extraction ────────────────────────────────────────
+
 /**
- * Check if a title like "Name <> Name" is a person-to-person internal meeting.
- * Returns true if both sides of <> are single-word BM first names.
+ * Convert a raw domain to a capitalized display name.
+ * "numa.com" → "Numa", "learnedmedia.com" → "Learned Media"
  */
-function isPersonToPersonTitle(title) {
-  if (!title) return false;
-  const match = title.match(/^(.+?)\s*<>\s*(.+?)(?:\s*[-:].*)?$/);
-  if (!match) return false;
-  const left = match[1].trim();
-  const right = match[2].trim();
-  // Both sides should be simple names (1-2 words, all BM first names)
-  return isBluMountainFirstName(left) && isBluMountainFirstName(right);
+function domainToDisplayName(domain) {
+  const base = domain.split('.')[0];
+  // Insert spaces before capitals in camelCase, then capitalize each word
+  const spaced = base.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ');
+  return spaced.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /**
- * Priority 1: Check if meeting title contains a known active client name.
- * Handles feeder agency logic: if Infinite Renewals or Liger appears alongside
- * another client, the other client is the customer. If a feeder agency appears
- * alone, treat it as the client (only Infinite Renewals is on the active list).
+ * Extract customer name from parsed attendees (who signaled external).
+ */
+function customerFromAttendees(attendees) {
+  for (const a of attendees) {
+    if (a.skip || a.signal !== 'external') continue;
+    // Priority: company name from "at Company"
+    if (a.company) return a.company;
+  }
+  for (const a of attendees) {
+    if (a.skip || a.signal !== 'external') continue;
+    // Fallback: domain
+    if (a.domain) return domainToDisplayName(a.domain);
+  }
+  return null;
+}
+
+/**
+ * Extract customer name from meeting title patterns.
+ */
+function customerFromTitle(title) {
+  if (!title) return null;
+  const titleLower = title.toLowerCase();
+
+  // Feeder agency + ampersand pattern
+  for (const agency of FEEDER_AGENCIES) {
+    if (titleLower.includes(agency)) {
+      const ampersandMatch = title.match(/^([^&]+)\s*&\s*([^:]+)/);
+      if (ampersandMatch) {
+        const left = ampersandMatch[1].trim();
+        const right = ampersandMatch[2].trim();
+        if (left.toLowerCase().includes(agency)) return right;
+        return left;
+      }
+    }
+  }
+
+  // "[Client] <> Blu Mountain..." or "[Client] <> Blumountain..."
+  const separatorMatch = title.match(/^(.+?)\s*<>\s*/);
+  if (separatorMatch) {
+    const candidate = separatorMatch[1].trim();
+    if (
+      !BLU_MOUNTAIN_COMPANY_NAMES.has(candidate.toLowerCase()) &&
+      !isBluMountainFirstName(candidate)
+    ) {
+      return candidate;
+    }
+  }
+
+  // "[Client] / [Person] - description" or "[Person] / [Client] - description"
+  const slashMatch = title.match(/^([^/]+)\s*\/\s*([^-]+)/);
+  if (slashMatch) {
+    const left = slashMatch[1].trim();
+    const right = slashMatch[2].trim();
+    if (isBluMountainFirstName(right) || isBluMountainName(right)) return left;
+    if (isBluMountainFirstName(left) || isBluMountainName(left)) return right;
+  }
+
+  // "[Client]: description"
+  const colonMatch = title.match(/^([^:]+):/);
+  if (colonMatch) {
+    const candidate = colonMatch[1].trim();
+    if (
+      !isBluMountainFirstName(candidate) &&
+      !isBluMountainName(candidate) &&
+      !BLU_MOUNTAIN_COMPANY_NAMES.has(candidate.toLowerCase())
+    ) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Match active client list against meeting title.
  */
 function matchActiveClient(title) {
   if (!title) return null;
@@ -144,19 +242,15 @@ function matchActiveClient(title) {
   // Check feeder agency + other client combo first
   for (const agency of FEEDER_AGENCIES) {
     if (titleLower.includes(agency)) {
-      // Look for another active client in the same title
       const otherClient = ACTIVE_CLIENTS.find((c) => {
         const cLower = c.toLowerCase();
         return cLower !== agency && titleLower.includes(cLower);
       });
       if (otherClient) return otherClient;
-      // No other client found — if the agency itself is an active client, use it
-      // (Infinite Renewals is both feeder agency and client)
     }
   }
 
-  // Match any active client by case-insensitive partial match
-  // Sort by length descending so longer names match first (e.g. "Hall Street 3PL" before "Hall")
+  // Match by length descending so longer names match first
   const sorted = [...ACTIVE_CLIENTS].sort((a, b) => b.length - a.length);
   for (const client of sorted) {
     if (titleLower.includes(client.toLowerCase())) {
@@ -167,96 +261,33 @@ function matchActiveClient(title) {
   return null;
 }
 
-/**
- * Priority 2: Infer customer from external attendee email domains.
- */
-function matchByAttendeeDomain(attendees) {
-  for (const attendee of attendees) {
-    const domain = extractExternalDomain(attendee);
-    if (domain) return domainToName(domain);
-  }
-  return null;
-}
-
-/**
- * Fallback: extract client from title patterns (<> or :) when no active client
- * matched and no external domain found.
- */
-function extractClientFromTitlePatterns(title) {
-  if (!title) return null;
-  const titleLower = title.toLowerCase();
-
-  // Feeder agency with ampersand pattern
-  for (const agency of FEEDER_AGENCIES) {
-    if (titleLower.includes(agency)) {
-      const ampersandMatch = title.match(/^([^&]+)\s*&\s*([^:]+)/);
-      if (ampersandMatch) {
-        const left = ampersandMatch[1].trim();
-        const right = ampersandMatch[2].trim();
-        if (left.toLowerCase().includes(agency)) return right;
-        return left;
-      }
-      return null;
-    }
-  }
-
-  // "[Client] <> ..."
-  const separatorMatch = title.match(/^(.+?)\s*<>\s*/);
-  if (separatorMatch) {
-    const candidate = separatorMatch[1].trim();
-    if (
-      candidate.toLowerCase() !== 'blu mountain' &&
-      !isBluMountainFirstName(candidate)
-    ) {
-      return candidate;
-    }
-  }
-
-  // "[Client]: ..."
-  const colonMatch = title.match(/^([^:]+):/);
-  if (colonMatch) {
-    const candidate = colonMatch[1].trim();
-    if (
-      !isBluMountainFirstName(candidate) &&
-      !isBluMountainName(candidate)
-    ) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
+// ─── Main Classification ─────────────────────────────────────────────
 
 export function classifyMeeting(meeting) {
   const title = meeting.title || '';
-  const attendees = parseAttendeeList(meeting.attendees);
-  const hasExternal = attendees.some(hasExternalBusiness);
+  const attendees = splitAttendees(meeting.attendees);
+  const nonSkipped = attendees.filter((a) => !a.skip);
 
-  // PRIMARY SIGNAL: attendee email domains determine internal vs external
+  // PRIMARY SIGNAL: attendee parsing determines internal vs external
+  const hasExternal = nonSkipped.some((a) => a.signal === 'external');
+
   if (!hasExternal) {
-    // All attendees are blumountain.me or personal email domains → INTERNAL
     return { type: 'internal', clientName: null };
   }
 
-  // Meeting is EXTERNAL — now determine the customer name
-  // Try active client list first (best match)
+  // Meeting is EXTERNAL — determine customer name
+  // 1) From attendee job title ("at Company")
+  // 2) From attendee domain
+  const attendeeCustomer = customerFromAttendees(nonSkipped);
+
+  // 3) From active client list in title
   const activeClient = matchActiveClient(title);
-  if (activeClient) {
-    return { type: 'external', clientName: activeClient };
-  }
 
-  // Try title patterns (<> or :)
-  const titleClient = extractClientFromTitlePatterns(title);
-  if (titleClient) {
-    return { type: 'external', clientName: titleClient };
-  }
+  // 4) From title patterns (<>, :, /)
+  const titleCustomer = customerFromTitle(title);
 
-  // Fall back to domain name
-  const domainClient = matchByAttendeeDomain(attendees);
-  if (domainClient) {
-    return { type: 'external', clientName: domainClient };
-  }
+  // Use best available name: active client list > attendee info > title patterns
+  const clientName = activeClient || attendeeCustomer || titleCustomer || 'Unknown Client';
 
-  // External by email but can't determine client name
-  return { type: 'external', clientName: 'Unknown Client' };
+  return { type: 'external', clientName };
 }
