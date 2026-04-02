@@ -36,6 +36,7 @@ const PERSONAL_DOMAINS = new Set([
 const BLU_MOUNTAIN_FIRST_NAMES = new Set([
   'johnny', 'abdallah', 'ahmed', 'kurt', 'kareem', 'salma',
   'hala', 'eman', 'mohamed', 'seif', 'tarek', 'omar', 'nashat', 'abuzaid',
+  'edward', 'patrick',
 ]);
 
 const FEEDER_AGENCIES = ['liger', 'infinite renewals'];
@@ -114,6 +115,20 @@ function isBluMountainFirstName(str) {
 function isBluMountainName(str) {
   const lower = str.toLowerCase().trim();
   return BLU_MOUNTAIN_NAMES.some((name) => lower === name || lower.includes(name));
+}
+
+/**
+ * Check if a title like "Name <> Name" is a person-to-person internal meeting.
+ * Returns true if both sides of <> are single-word BM first names.
+ */
+function isPersonToPersonTitle(title) {
+  if (!title) return false;
+  const match = title.match(/^(.+?)\s*<>\s*(.+?)(?:\s*[-:].*)?$/);
+  if (!match) return false;
+  const left = match[1].trim();
+  const right = match[2].trim();
+  // Both sides should be simple names (1-2 words, all BM first names)
+  return isBluMountainFirstName(left) && isBluMountainFirstName(right);
 }
 
 /**
@@ -215,6 +230,12 @@ function extractClientFromTitlePatterns(title) {
 export function classifyMeeting(meeting) {
   const title = meeting.title || '';
   const attendees = parseAttendeeList(meeting.attendees);
+  const hasExternal = attendees.some(hasExternalBusiness);
+
+  // Early exit: person-to-person <> titles with no external business attendees
+  if (isPersonToPersonTitle(title) && !hasExternal) {
+    return { type: 'internal', clientName: null };
+  }
 
   // Priority 1: known active client name in the meeting title
   const activeClient = matchActiveClient(title);

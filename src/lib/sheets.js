@@ -6,8 +6,7 @@ const SCOPES = 'https://www.googleapis.com/auth/spreadsheets https://www.googlea
 const DISCOVERY_DOC = 'https://sheets.googleapis.com/$discovery/rest?version=v4';
 
 const TOKEN_KEY = 'sybill-google-token';
-const API_DELAY_MS = 500;
-const RETRY_DELAY_MS = 2000;
+const API_DELAY_MS = 1000;
 
 let tokenClient = null;
 let gapiInited = false;
@@ -29,13 +28,20 @@ async function throttle() {
 }
 
 async function withRetry(fn) {
+  const delays = [2000, 4000];
   await throttle();
   try {
     return await fn();
   } catch (err) {
-    await sleep(RETRY_DELAY_MS);
-    await throttle();
-    return await fn();
+    for (let i = 0; i < delays.length; i++) {
+      await sleep(delays[i]);
+      await throttle();
+      try {
+        return await fn();
+      } catch (retryErr) {
+        if (i === delays.length - 1) throw retryErr;
+      }
+    }
   }
 }
 
