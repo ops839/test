@@ -227,8 +227,13 @@ async function ensureSheetExists(spreadsheetId, sheetTitle) {
 export async function uploadMeeting(spreadsheetId, clientName, meeting) {
   if (!clientName) throw new Error('No client name');
 
-  // Sanitize sheet title (max 100 chars, no special chars that Sheets disallows)
-  const sheetTitle = clientName.replace(/[\\/*?[\]:]/g, '').substring(0, 100);
+  // Sanitize sheet title: only client name, max 100 chars, no special chars
+  let sheetTitle = clientName
+    .replace(/[\\/*?[\]:]/g, '')
+    .replace(/^'+|'+$/g, '')  // No leading/trailing apostrophes
+    .trim();
+  if (!sheetTitle) throw new Error('Empty sheet title after sanitization');
+  sheetTitle = sheetTitle.substring(0, 100);
 
   await ensureSheetExists(spreadsheetId, sheetTitle);
 
