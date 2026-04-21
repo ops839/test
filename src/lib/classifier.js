@@ -1,56 +1,101 @@
 /**
- * Classifies meetings as internal/external and extracts client names.
+ * Deterministic meeting classification.
+ *
+ * Priority (stop at first match):
+ *   1. Meeting title contains a known client name (case-insensitive substring).
+ *      Exception: "Infinite Renewals" loses to any other client in the same title.
+ *   2. Any attendee email domain matches the domain-to-client map.
+ *   3. Any attendee has a business email (not BM, not personal) → uncertain.
+ *   4. All attendees are BM or personal → internal (skip).
  */
 
-const KNOWN_BM_MEMBERS = new Set([
-  'johnny sengelmann', 'johnny',
-  'abdallah gaballah', 'abdallah',
-  'ahmed amr', 'ahmed',
-  'kurt buttress', 'kurt',
-  'kareem talaat', 'kareem',
-  'salma khaled', 'salma',
-  'hala mostafa', 'hala',
-  'eman refaey', 'eman',
-  'mohamed abuzaid', 'abuzaid',
-  'seif muhammed', 'seif',
-  'tarek',
-  'omar',
-  'mohamed nashat', 'nashat',
-]);
+// ─── 32 known clients ────────────────────────────────────────────────
+export const KNOWN_CLIENTS = [
+  'Accelerated Analytics',
+  'Athena',
+  'August Health',
+  'Blu Sky',
+  'Bushel',
+  'Cybernut',
+  'Falcon Rappaport',
+  'Hall Street',
+  'Infinite Renewals',
+  'InnoVint',
+  'Jencap',
+  'Learned Media',
+  'Maxa Designs',
+  'MiniCo',
+  'Milrose',
+  'Numa',
+  'Pestpac',
+  'Polar Analytics',
+  'Poppins Payroll',
+  'Productside',
+  'Radicle',
+  'Razor Metrics',
+  'RebelIQ',
+  'Select Exterminating',
+  'Shoplift',
+  'Simpl',
+  'SSA Group',
+  'The Estate Lawyers',
+  'Transcom',
+  'Trnsact',
+  'Wisconsin Carports',
+  'Zeitcaster',
+];
 
-const PERSONAL_DOMAINS = new Set([
-  'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
-  'icloud.com', 'live.com', 'me.com', 'msn.com',
-  'protonmail.com', 'googlemail.com', 'optonline.net',
-  'ymail.com', 'aol.com', 'comcast.net', 'att.net',
-  'verizon.net', 'sbcglobal.net', 'bellsouth.net',
-  'cox.net', 'charter.net', 'earthlink.net',
-]);
+const INFINITE_RENEWALS = 'Infinite Renewals';
 
-const DOMAIN_TO_CLIENT = {
-  'akaselect.com': 'Select Exterminating',
-  'poppinspayroll.com': 'Poppins Payroll',
-  'poppins.com': 'Poppins Payroll',
-  'learnedmedia.com': 'Learned Media',
-  'numa.com': 'Numa',
-  'shoplift.ai': 'Shoplift',
-  'rebeliq.com': 'RebelIQ',
-  'productside.com': 'Productside',
-  'zeitcaster.com': 'Zeitcaster',
-  'jencapgroup.com': 'Jencap',
-  'minico.com': 'MiniCo',
-  'frblaw.com': 'Falcon Rappaport',
-  'xano.io': 'Xano',
-  'xano.com': 'Xano',
+// Pre-sort for longest-match-first in title scan (avoids "Simpl" matching "Simpl GPT" etc.)
+const CLIENTS_BY_LENGTH = [...KNOWN_CLIENTS].sort((a, b) => b.length - a.length);
+
+// ─── Domain → client map (77 entries) ────────────────────────────────
+export const DOMAIN_TO_CLIENT = {
+  // 32 active clients
+  'acceleratedanalytics.com': 'Accelerated Analytics',
+  'athenahq.ai': 'Athena',
+  'augusthealth.com': 'August Health',
+  'bluskycapital.com': 'Blu Sky',
   'bushelpowered.com': 'Bushel',
   'bushelpower.com': 'Bushel',
-  'venturelab.com': 'VentureLab',
-  'ventrichealth.com': 'Ventric Health',
-  'trnsact.com': 'TRNSACT',
+  'cybernut.com': 'Cybernut',
+  'frblaw.com': 'Falcon Rappaport',
+  'hallstreetcapital.com': 'Hall Street',
+  'infiniterenewals.com': 'Infinite Renewals',
+  'innovint.us': 'InnoVint',
+  'jencapgroup.com': 'Jencap',
+  'learnedmedia.com': 'Learned Media',
   'maxadesigns.com': 'Maxa Designs',
+  'minico.com': 'MiniCo',
+  'milrose.com': 'Milrose',
+  'numa.com': 'Numa',
+  'pestpac.com': 'Pestpac',
+  'polaranalytics.com': 'Polar Analytics',
+  'poppinspayroll.com': 'Poppins Payroll',
+  'poppins.com': 'Poppins Payroll',
+  'productside.com': 'Productside',
+  'radiclescience.com': 'Radicle',
+  'razormetrics.com': 'Razor Metrics',
+  'rebeliq.com': 'RebelIQ',
+  'akaselect.com': 'Select Exterminating',
+  'shoplift.ai': 'Shoplift',
+  'simpl.com': 'Simpl',
+  'ssa-group.com': 'SSA Group',
+  'estatelawyers.com': 'The Estate Lawyers',
+  'transcom.com': 'Transcom',
+  'trnsact.com': 'Trnsact',
+  'wisconsincarports.com': 'Wisconsin Carports',
+  'zeitcaster.com': 'Zeitcaster',
+
+  // Other past/secondary client domains
+  'xano.io': 'Xano',
+  'xano.com': 'Xano',
+  'venturelab.com': 'VentureLab',
+  'venturelab.io': 'VentureLab',
+  'ventrichealth.com': 'Ventric Health',
   'laddergtm.com': 'Ladder GTM',
   'formations.com': 'Formations',
-  'polaranalytics.com': 'Polar Analytics',
   'depodirect.com': 'DepoDirect',
   'salesmessage.com': 'SalesMessage',
   'salesmsg.com': 'SalesMessage',
@@ -87,58 +132,44 @@ const DOMAIN_TO_CLIENT = {
   'okapico.com': 'OkapiCo',
   'amplifyops.com': 'Amplify Ops',
   'goligilo.com': 'Goligilo',
-  'venturelab.io': 'VentureLab',
-  'blumountain.me': null,
 };
 
-const ACTIVE_CLIENTS = [
-  'Infinite Renewals',
-  'Accelerated Analytics',
-  'Athena',
-  'August Health',
-  'Blu Sky',
-  'Bushel',
-  'Custom GPT',
-  'Cybernut',
-  'Hall Street',
-  'Jencap',
-  'MiniCo',
-  'Maxa Designs',
-  'Milrose',
-  'Numa',
-  'Polar Analytics',
-  'Poppins Payroll',
-  'Productside',
-  'Razor Metrics',
-  'RebelIQ',
-  'Select Exterminating',
-  'Shoplift',
-  'SSA Group',
-  'Simpl',
-  'The Estate Lawyers',
-  'Transcom',
-  'Trnsact',
-  'Wisconsin Carports',
-  'Zeitcaster',
-  'InnoVint',
-  'Pestpac',
-  'Hall St',
-  'Learnedmedia',
-  'Learned Media',
-  'Falcon Rappaport',
-  'Radicle',
-  'Liger',
-];
+// ─── Personal email domains ──────────────────────────────────────────
+const PERSONAL_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'yahoo.com',
+  'ymail.com',
+  'hotmail.com',
+  'outlook.com',
+  'live.com',
+  'msn.com',
+  'icloud.com',
+  'me.com',
+  'protonmail.com',
+  'aol.com',
+]);
 
-const FEEDER_AGENCIES = new Set(['liger']);
+const BM_DOMAIN = 'blumountain.me';
 
-// Pre-sort by length descending so longer names match first
-const ACTIVE_CLIENTS_SORTED = [...ACTIVE_CLIENTS].sort((a, b) => b.length - a.length);
+// ─── BM team members (fallback name-only matching) ───────────────────
+const KNOWN_BM_MEMBERS = new Set([
+  'johnny sengelmann', 'johnny',
+  'abdallah gaballah', 'abdallah',
+  'ahmed amr', 'ahmed',
+  'kurt buttress', 'kurt',
+  'kareem talaat', 'kareem',
+  'salma khaled', 'salma',
+  'hala mostafa', 'hala',
+  'eman refaey', 'eman',
+  'mohamed abuzaid', 'abuzaid',
+  'seif muhammed', 'seif',
+  'tarek',
+  'omar',
+  'mohamed nashat', 'nashat',
+]);
 
-export { KNOWN_BM_MEMBERS, ACTIVE_CLIENTS_SORTED };
-
-// ─── Helpers ─────────────────────────────────────────────────────────
-
+// ─── Attendee parsing ────────────────────────────────────────────────
 function isNotetaker(entry) {
   return /notetaker/i.test(entry);
 }
@@ -147,78 +178,29 @@ function stripParenthetical(entry) {
   return entry.replace(/\s*\(.*\)\s*$/, '').trim();
 }
 
-/**
- * Extract the domain from attendee parenthetical, e.g. (numa.com) → "numa.com"
- */
 function extractDomain(entry) {
-  const m = entry.match(/\(([a-zA-Z0-9.-]+\.[a-zA-Z]{2,4})\)\s*$/);
+  const m = entry.match(/\(([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\)\s*$/);
   return m ? m[1].toLowerCase() : null;
 }
 
-/**
- * Extract company from "at Company" pattern in parenthetical.
- */
 function extractCompanyFromAt(entry) {
   const m = entry.match(/\([^)]*\bat\s+(.+?)(?:\s*\(FKA[^)]*\))?\s*\)\s*$/i);
   return m ? m[1].trim() : null;
 }
 
-/**
- * Resolve a domain to a proper display name.
- */
-function domainToClientName(domain) {
-  if (!domain) return null;
-  const lower = domain.toLowerCase();
-
-  // Check explicit map
-  if (lower in DOMAIN_TO_CLIENT) return DOMAIN_TO_CLIENT[lower];
-
-  // Personal domain → null (internal)
-  if (PERSONAL_DOMAINS.has(lower)) return null;
-
-  // blumountain.me → null (internal)
-  if (lower === 'blumountain.me') return null;
-
-  // Unknown business domain → Title Case with camelCase splitting
-  const base = lower.split('.')[0];
-  // Insert spaces before capitals in camelCase
-  const spaced = base.replace(/([a-z])([A-Z])/g, '$1 $2');
-  return spaced.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 function isPersonalDomain(domain) {
-  return domain && PERSONAL_DOMAINS.has(domain.toLowerCase());
+  return !!domain && PERSONAL_DOMAINS.has(domain.toLowerCase());
 }
 
-function isBmMember(name) {
+function isBmDomain(domain) {
+  return !!domain && domain.toLowerCase() === BM_DOMAIN;
+}
+
+function isBmMemberName(name) {
   return KNOWN_BM_MEMBERS.has(name.toLowerCase().trim());
 }
 
-// ─── Title Matching ──────────────────────────────────────────────────
-
-function matchClientInTitle(title) {
-  if (!title) return null;
-  const titleLower = title.toLowerCase();
-  for (const client of ACTIVE_CLIENTS_SORTED) {
-    if (titleLower.includes(client.toLowerCase())) {
-      // If it's a feeder agency, check if there's another client too
-      if (FEEDER_AGENCIES.has(client.toLowerCase())) {
-        const other = ACTIVE_CLIENTS_SORTED.find(
-          (c) => !FEEDER_AGENCIES.has(c.toLowerCase()) && titleLower.includes(c.toLowerCase())
-        );
-        if (other) return other;
-        // Liger alone with no other client → skip
-        return null;
-      }
-      return client;
-    }
-  }
-  return null;
-}
-
-// ─── Attendee Parsing ────────────────────────────────────────────────
-
-function parseAttendees(attendeesStr) {
+export function parseAttendees(attendeesStr) {
   if (!attendeesStr) return [];
   return attendeesStr
     .split(',')
@@ -229,139 +211,68 @@ function parseAttendees(attendeesStr) {
       const name = stripParenthetical(entry);
       const domain = extractDomain(entry);
       const companyFromAt = extractCompanyFromAt(entry);
-      return { raw: entry, name, domain, companyFromAt, isBm: isBmMember(name) };
+      return {
+        raw: entry,
+        name,
+        domain,
+        companyFromAt,
+        isBm: isBmDomain(domain) || isBmMemberName(name),
+        isPersonal: isPersonalDomain(domain),
+      };
     });
 }
 
+// ─── Title matching ──────────────────────────────────────────────────
+function matchClientInTitle(title) {
+  if (!title) return null;
+  const lower = title.toLowerCase();
+
+  // Collect every client whose name appears as a case-insensitive substring.
+  const hits = [];
+  for (const client of CLIENTS_BY_LENGTH) {
+    if (lower.includes(client.toLowerCase())) hits.push(client);
+  }
+  if (hits.length === 0) return null;
+
+  // Infinite Renewals loses to any other match.
+  if (hits.length > 1) {
+    const other = hits.find((c) => c !== INFINITE_RENEWALS);
+    if (other) return other;
+  }
+  return hits[0];
+}
+
+// ─── Main classification ─────────────────────────────────────────────
 /**
- * Check if an attendee signals EXTERNAL with a business domain.
- * Returns the client name if external, null if internal/personal.
+ * @returns {{status: 'client'|'uncertain'|'internal', client?: string, candidateDomain?: string, attendees?: object[]}}
  */
-function attendeeExternalClient(a) {
-  // "at Company" pattern
-  if (a.companyFromAt) {
-    const lower = a.companyFromAt.toLowerCase();
-    if (lower === 'blu mountain' || lower === 'blue mountain' || lower === 'blumountain') {
-      return null;
-    }
-    return a.companyFromAt;
-  }
-  // Domain in parenthetical
-  if (a.domain) {
-    return domainToClientName(a.domain);
-  }
-  return null;
-}
-
-// ─── Customer Name Cleanup ───────────────────────────────────────────
-
-const BM_NAME_PATTERNS = [
-  /\bblu\s*mountain\b/gi,
-  /\bblumountain\b/gi,
-  /\bblue\s*mountain\b/gi,
-];
-
-const MEETING_DESCRIPTOR_PATTERNS = [
-  /\b(weekly|monthly|daily|bi-?weekly)\s*(call|sync|review|check-?in|standup|meeting|huddle|looker\s+review)?\b/gi,
-  /\b(call|sync|kickoff|kick-?off|intro|introduction|onboarding|check-?in|standup|meeting|huddle|review|retro|debrief|wrap-?up)\b/gi,
-  /\b(inbound|outbound)\s*\d{4}\s*(products?)?\b/gi,
-  /\bpartner\s*group\b/gi,
-  /\b\[L\]\b/gi,
-];
-
-export function cleanCustomerName(name) {
-  if (!name) return null;
-  let cleaned = name;
-
-  // Strip BM company names
-  for (const pat of BM_NAME_PATTERNS) {
-    cleaned = cleaned.replace(pat, '');
-  }
-
-  // Strip meeting descriptors
-  for (const pat of MEETING_DESCRIPTOR_PATTERNS) {
-    cleaned = cleaned.replace(pat, '');
-  }
-
-  // Strip separators, parens, leading/trailing punctuation
-  cleaned = cleaned.replace(/\s*<>\s*/g, ' ');
-  cleaned = cleaned.replace(/\s*[/:&\-–—]\s*/g, ' ');
-  cleaned = cleaned.replace(/\(.*?\)/g, '');
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
-  cleaned = cleaned.replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, '').trim();
-
-  // If nothing left or just "and" / prepositions, it's garbage
-  if (!cleaned || /^(and|or|the|with|for|to|of|in|at|a|an)$/i.test(cleaned)) {
-    return null;
-  }
-
-  // If it starts with "and " — broken extraction
-  if (/^and\s+/i.test(cleaned)) return null;
-
-  return cleaned;
-}
-
-// ─── Main Classification ─────────────────────────────────────────────
-
 export function classifyMeeting(meeting) {
   const title = meeting.title || '';
   const attendees = parseAttendees(meeting.attendees);
 
-  // Signal 1: title contains a known client name
-  const clientFromTitle = matchClientInTitle(title);
+  // 1. Title match.
+  const titleClient = matchClientInTitle(title);
+  if (titleClient) return { status: 'client', client: titleClient };
 
-  // Signal 2: any attendee has a business email domain (not personal, not BM)
-  let clientFromAttendee = null;
+  // 2. Attendee domain in map.
   for (const a of attendees) {
-    if (a.isBm) continue;
-    const client = attendeeExternalClient(a);
-    if (client) {
-      clientFromAttendee = client;
-      break;
-    }
+    if (!a.domain) continue;
+    const mapped = DOMAIN_TO_CLIENT[a.domain.toLowerCase()];
+    if (mapped) return { status: 'client', client: mapped };
   }
 
-  // Signal 3: unknown attendee (not BM, no parenthetical with domain)
-  // Only counts as external if we also have a title match or business domain
-  const hasUnknownAttendee = attendees.some(
-    (a) => !a.isBm && !a.domain && !a.companyFromAt
+  // 3. Any business email → uncertain.
+  const businessCandidates = attendees.filter(
+    (a) => a.domain && !isBmDomain(a.domain) && !isPersonalDomain(a.domain)
   );
-
-  // Determine classification
-  if (clientFromTitle) {
-    // Title matched a known client — always EXTERNAL
-    const cleaned = cleanCustomerName(clientFromTitle);
-    if (cleaned) return { type: 'external', clientName: cleaned };
+  if (businessCandidates.length > 0) {
+    return {
+      status: 'uncertain',
+      candidateDomain: businessCandidates[0].domain,
+      attendees,
+    };
   }
 
-  if (clientFromAttendee) {
-    // Attendee has a business domain → EXTERNAL
-    const cleaned = cleanCustomerName(clientFromAttendee);
-    if (cleaned) return { type: 'external', clientName: cleaned };
-  }
-
-  // If we only have unknown attendees (no domain info) + title has a client → already handled above
-  // If unknown attendees but no title match and no business domain:
-  // Check if title matches active client (already done). If not, check if all "external"
-  // attendees only have personal email domains → INTERNAL
-  if (hasUnknownAttendee && !clientFromTitle && !clientFromAttendee) {
-    // Unknown attendees with no business domain info — check if we can identify from title
-    // Title cleanup as last resort
-    const titleClient = cleanCustomerName(title);
-    // Only use title if it looks like a company name (not a person name, not garbage)
-    if (titleClient && titleClient.split(/\s+/).length <= 4 && !/interview/i.test(title)) {
-      // But check: is this just a person's name? If all words are BM first names, skip
-      const allBmNames = titleClient.toLowerCase().split(/\s+/).every(
-        (w) => KNOWN_BM_MEMBERS.has(w)
-      );
-      if (!allBmNames) {
-        return { type: 'external', clientName: titleClient };
-      }
-    }
-  }
-
-  // Interview meetings with only personal email attendees → INTERNAL
-  // Meetings where all external attendees are personal email only → INTERNAL
-  // Default: INTERNAL
-  return { type: 'internal', clientName: null };
+  // 4. All BM or personal → internal.
+  return { status: 'internal' };
 }
