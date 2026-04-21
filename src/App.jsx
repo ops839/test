@@ -143,11 +143,16 @@ export default function App() {
         )}
 
         {phase !== 'upload' && (
-          <section className="grid grid-cols-4 gap-3">
+          <section className="grid grid-cols-5 gap-3">
             <Stat label="Meetings parsed" value={totalMessages} />
             <Stat label="Auto-assigned" value={assignedStats.count} color="text-green-700" />
-            <Stat label="Clients" value={assignedStats.clients} color="text-blue-700" />
+            <Stat
+              label="Uncertain (needs review)"
+              value={uncertain.length}
+              color={uncertain.length > 0 ? 'text-amber-600' : 'text-gray-400'}
+            />
             <Stat label="Internal / skipped" value={internalCount} color="text-gray-500" />
+            <Stat label="Clients" value={assignedStats.clients} color="text-blue-700" />
           </section>
         )}
 
