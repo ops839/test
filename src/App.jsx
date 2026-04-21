@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import FileDropZone from './components/FileDropZone';
 import ReviewPanel from './components/ReviewPanel';
 import SettingsPanel from './components/Settings';
+import SelectExport from './components/SelectExport';
 import { parseSybillMessages } from './lib/parser';
 import { classifyMeeting } from './lib/classifier';
 import { exportXlsx } from './lib/xlsx';
@@ -28,6 +29,7 @@ export default function App() {
   const [aiError, setAiError] = useState('');
   const [internalCount, setInternalCount] = useState(0);
   const [totalMessages, setTotalMessages] = useState(0);
+  const [exportSelection, setExportSelection] = useState(() => new Set());
 
   const onFilesLoaded = useCallback((loaded) => setFiles(loaded), []);
 
@@ -36,6 +38,17 @@ export default function App() {
     const count = clients.reduce((n, c) => n + assigned[c].length, 0);
     return { clients: clients.length, count };
   }, [assigned]);
+
+  const selectedExportStats = useMemo(() => {
+    let clients = 0;
+    let count = 0;
+    for (const [client, rows] of Object.entries(assigned)) {
+      if (!exportSelection.has(client)) continue;
+      clients++;
+      count += rows.length;
+    }
+    return { clients, count };
+  }, [assigned, exportSelection]);
 
   const uncertainMeetingCount = useMemo(
     () => groups.reduce((n, g) => n + g.meetings.length, 0),
@@ -70,6 +83,7 @@ export default function App() {
     setAiError('');
 
     if (built.length === 0) {
+      setExportSelection(new Set(Object.keys(byClient)));
       setPhase('done');
       return;
     }
@@ -113,10 +127,17 @@ export default function App() {
     setGroups([]);
     setAiSuggestions(null);
     setInternalCount((n) => n + skipped);
+    setExportSelection(new Set(Object.keys(merged)));
     setPhase('done');
   };
 
-  const download = () => exportXlsx(assigned, `sybill-meetings-${todayStamp()}.xlsx`);
+  const download = () => {
+    const filtered = {};
+    for (const [client, rows] of Object.entries(assigned)) {
+      if (exportSelection.has(client)) filtered[client] = rows;
+    }
+    exportXlsx(filtered, `sybill-meetings-${todayStamp()}.xlsx`);
+  };
 
   const reset = () => {
     setFiles([]);
@@ -127,6 +148,7 @@ export default function App() {
     setTotalMessages(0);
     setAiProgress({ done: 0, total: 0 });
     setAiError('');
+    setExportSelection(new Set());
     setPhase('upload');
   };
 
@@ -226,40 +248,36 @@ export default function App() {
         )}
 
         {phase === 'done' && (
-          <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-gray-800">2. Download XLSX</h2>
-            <p className="text-sm text-gray-600">
-              {assignedStats.count} meeting{assignedStats.count !== 1 ? 's' : ''} across{' '}
-              {assignedStats.clients} client{assignedStats.clients !== 1 ? 's' : ''} ready to
-              export.
-            </p>
-            {assignedStats.clients > 0 && (
-              <div className="text-xs text-gray-500 font-mono flex flex-wrap gap-x-4 gap-y-1">
-                {Object.entries(assigned)
-                  .sort(([a], [b]) => a.localeCompare(b))
-                  .map(([client, rows]) => (
-                    <span key={client}>
-                      {client}: {rows.length}
-                    </span>
-                  ))}
+          <>
+            <SelectExport
+              assigned={assigned}
+              selected={exportSelection}
+              onChange={setExportSelection}
+            />
+            <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-3">
+              <h2 className="text-lg font-semibold text-gray-800">Download XLSX</h2>
+              <p className="text-sm text-gray-600">
+                {selectedExportStats.count} meeting{selectedExportStats.count !== 1 ? 's' : ''}{' '}
+                across {selectedExportStats.clients} selected client
+                {selectedExportStats.clients !== 1 ? 's' : ''} will be written to the file.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={download}
+                  disabled={selectedExportStats.count === 0}
+                  className="px-5 py-2.5 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Download XLSX
+                </button>
+                <button
+                  onClick={reset}
+                  className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50"
+                >
+                  Start over
+                </button>
               </div>
-            )}
-            <div className="flex items-center gap-3">
-              <button
-                onClick={download}
-                disabled={assignedStats.count === 0}
-                className="px-5 py-2.5 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Download XLSX
-              </button>
-              <button
-                onClick={reset}
-                className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Start over
-              </button>
-            </div>
-          </section>
+            </section>
+          </>
         )}
       </main>
 
