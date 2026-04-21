@@ -2,12 +2,15 @@
  * Deterministic meeting classification.
  *
  * Priority (stop at first match):
- *   1. Meeting title contains a known client name (case-insensitive substring).
- *      Exception: "Infinite Renewals" loses to any other client in the same title.
- *   2. Any attendee email domain matches the domain-to-client map.
- *   3. Any attendee has a business email (not BM, not personal) → uncertain.
- *   4. All attendees are BM or personal → internal (skip).
+ *   1a. Full client name as case-insensitive substring in title.
+ *       Exception: "Infinite Renewals" loses to any other full or alias match.
+ *   1b. Title alias (whole-word match from TITLE_ALIASES — see aliases.js).
+ *   2.  Any attendee email domain matches the domain-to-client map.
+ *   3.  Any attendee has a business email (not BM, not personal) → uncertain.
+ *   4.  Any attendee that can't be confirmed BM-or-personal → uncertain.
+ *   5.  All attendees are BM or personal → internal (skip).
  */
+import { TITLE_ALIASES } from './aliases.js';
 
 // ─── 32 known clients ────────────────────────────────────────────────
 export const KNOWN_CLIENTS = [
@@ -18,7 +21,7 @@ export const KNOWN_CLIENTS = [
   'Bushel',
   'Cybernut',
   'Falcon Rappaport',
-  'Hall Street',
+  'Hall Street 3PL',
   'Infinite Renewals',
   'InnoVint',
   'Jencap',
@@ -61,7 +64,7 @@ export const DOMAIN_TO_CLIENT = {
   'bushelpower.com': 'Bushel',
   'cybernut.com': 'Cybernut',
   'frblaw.com': 'Falcon Rappaport',
-  'hallstreetcapital.com': 'Hall Street',
+  'hallstreetcapital.com': 'Hall Street 3PL',
   'infiniterenewals.com': 'Infinite Renewals',
   'innovint.us': 'InnoVint',
   'jencapgroup.com': 'Jencap',
@@ -242,6 +245,22 @@ function matchClientInTitle(title) {
   return hits[0];
 }
 
+function escapeForRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+const COMPILED_ALIASES = Object.entries(TITLE_ALIASES).map(([alias, client]) => ({
+  re: new RegExp(`\\b${escapeForRegex(alias)}\\b`, 'i'),
+  client,
+}));
+
+function matchAliasInTitle(title) {
+  if (!title) return null;
+  for (const { re, client } of COMPILED_ALIASES) {
+    if (re.test(title)) return client;
+  }
+  return null;
+}
+
 // ─── Main classification ─────────────────────────────────────────────
 /**
  * Priority, stop at first match:
@@ -258,8 +277,17 @@ export function classifyMeeting(meeting) {
   const title = meeting.title || '';
   const attendees = parseAttendees(meeting.attendees);
 
-  // 1. Title match.
+  // 1a. Full-name title match. IR loses to any other full or alias match.
   const titleClient = matchClientInTitle(title);
+  if (titleClient && titleClient !== INFINITE_RENEWALS) {
+    return { status: 'client', client: titleClient };
+  }
+
+  // 1b. Alias whole-word match.
+  const aliasClient = matchAliasInTitle(title);
+  if (aliasClient) return { status: 'client', client: aliasClient };
+
+  // IR alone (no other full name, no alias) → IR wins.
   if (titleClient) return { status: 'client', client: titleClient };
 
   // 2. Attendee domain in map.

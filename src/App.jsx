@@ -1,9 +1,13 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import FileDropZone from './components/FileDropZone';
 import ReviewPanel from './components/ReviewPanel';
+import SettingsPanel from './components/Settings';
 import { parseSybillMessages } from './lib/parser';
 import { classifyMeeting } from './lib/classifier';
 import { exportXlsx } from './lib/xlsx';
+import { loadSettings } from './lib/settings';
+import { classifyGroups } from './lib/ai';
+import { groupUncertain } from './lib/grouping';
 
 function todayStamp() {
   const d = new Date();
@@ -14,16 +18,18 @@ function todayStamp() {
 }
 
 export default function App() {
+  const [settings, setSettings] = useState(loadSettings);
   const [files, setFiles] = useState([]);
-  const [phase, setPhase] = useState('upload'); // upload | review | done
-  const [assigned, setAssigned] = useState({}); // client -> meetings[]
-  const [uncertain, setUncertain] = useState([]); // meetings w/ candidateDomain
+  const [phase, setPhase] = useState('upload'); // upload | ai | review | done
+  const [assigned, setAssigned] = useState({});
+  const [groups, setGroups] = useState([]);
+  const [aiSuggestions, setAiSuggestions] = useState(null);
+  const [aiProgress, setAiProgress] = useState({ done: 0, total: 0 });
+  const [aiError, setAiError] = useState('');
   const [internalCount, setInternalCount] = useState(0);
   const [totalMessages, setTotalMessages] = useState(0);
 
-  const onFilesLoaded = useCallback((loaded) => {
-    setFiles(loaded);
-  }, []);
+  const onFilesLoaded = useCallback((loaded) => setFiles(loaded), []);
 
   const assignedStats = useMemo(() => {
     const clients = Object.keys(assigned);
@@ -31,7 +37,12 @@ export default function App() {
     return { clients: clients.length, count };
   }, [assigned]);
 
-  const classifyAll = () => {
+  const uncertainMeetingCount = useMemo(
+    () => groups.reduce((n, g) => n + g.meetings.length, 0),
+    [groups]
+  );
+
+  const runClassification = async () => {
     const byClient = {};
     const pending = [];
     let internal = 0;
@@ -40,29 +51,52 @@ export default function App() {
     for (const file of files) {
       const meetings = parseSybillMessages(file.messages);
       total += meetings.length;
-
       for (const meeting of meetings) {
-        const result = classifyMeeting(meeting);
-        if (result.status === 'client') {
-          (byClient[result.client] ||= []).push(meeting);
-        } else if (result.status === 'uncertain') {
-          pending.push({ ...meeting, candidateDomain: result.candidateDomain });
-        } else {
-          internal++;
-        }
+        const r = classifyMeeting(meeting);
+        if (r.status === 'client') (byClient[r.client] ||= []).push(meeting);
+        else if (r.status === 'uncertain')
+          pending.push({ ...meeting, candidateDomain: r.candidateDomain || null });
+        else internal++;
       }
     }
 
+    const built = groupUncertain(pending);
+
     setAssigned(byClient);
-    setUncertain(pending);
+    setGroups(built);
     setInternalCount(internal);
     setTotalMessages(total);
-    setPhase(pending.length > 0 ? 'review' : 'done');
+    setAiSuggestions(null);
+    setAiError('');
+
+    if (built.length === 0) {
+      setPhase('done');
+      return;
+    }
+
+    if (!settings.apiKey) {
+      setPhase('review');
+      return;
+    }
+
+    setPhase('ai');
+    setAiProgress({ done: 0, total: built.length });
+    try {
+      const results = await classifyGroups(
+        settings.apiKey,
+        built,
+        (done, totalGroups) => setAiProgress({ done, total: totalGroups })
+      );
+      setAiSuggestions(results);
+    } catch (e) {
+      setAiError(e.message || String(e));
+    } finally {
+      setPhase('review');
+    }
   };
 
   const onReviewConfirm = (decisions) => {
     const merged = { ...assigned };
-    let added = 0;
     let skipped = 0;
     for (const { meeting, client } of decisions) {
       if (client) {
@@ -73,40 +107,37 @@ export default function App() {
           actionItems: meeting.actionItems,
           attendees: meeting.attendees,
         });
-        added++;
-      } else {
-        skipped++;
-      }
+      } else skipped++;
     }
     setAssigned(merged);
-    setUncertain([]);
+    setGroups([]);
+    setAiSuggestions(null);
     setInternalCount((n) => n + skipped);
     setPhase('done');
-    return { added, skipped };
   };
 
-  const download = () => {
-    exportXlsx(assigned, `sybill-meetings-${todayStamp()}.xlsx`);
-  };
+  const download = () => exportXlsx(assigned, `sybill-meetings-${todayStamp()}.xlsx`);
 
   const reset = () => {
     setFiles([]);
     setAssigned({});
-    setUncertain([]);
+    setGroups([]);
+    setAiSuggestions(null);
     setInternalCount(0);
     setTotalMessages(0);
+    setAiProgress({ done: 0, total: 0 });
+    setAiError('');
     setPhase('upload');
   };
 
   const totalFileMessages = files.reduce((n, f) => n + f.messages.length, 0);
+  const busy = phase === 'ai';
 
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-6 py-5">
-          <h1 className="text-2xl font-bold text-gray-900">
-            Sybill Meeting Classifier
-          </h1>
+          <h1 className="text-2xl font-bold text-gray-900">Sybill Meeting Classifier</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Drop Slack export JSON files → classify by client → download XLSX.
           </p>
@@ -114,15 +145,15 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-6">
+        <SettingsPanel settings={settings} onChange={setSettings} />
+
         <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-          <h2 className="text-lg font-semibold text-gray-800">
-            1. Upload Slack export files
-          </h2>
+          <h2 className="text-lg font-semibold text-gray-800">1. Upload Slack export files</h2>
           <FileDropZone onFilesLoaded={onFilesLoaded} disabled={phase !== 'upload'} />
           {files.length > 0 && (
             <p className="text-sm text-gray-500">
-              {files.length} file{files.length !== 1 ? 's' : ''} loaded — {totalFileMessages} total
-              Slack messages.
+              {files.length} file{files.length !== 1 ? 's' : ''} loaded — {totalFileMessages}{' '}
+              total Slack messages.
             </p>
           )}
         </section>
@@ -130,7 +161,7 @@ export default function App() {
         {phase === 'upload' && (
           <section className="flex items-center gap-4">
             <button
-              onClick={classifyAll}
+              onClick={runClassification}
               disabled={files.length === 0}
               className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -148,16 +179,50 @@ export default function App() {
             <Stat label="Auto-assigned" value={assignedStats.count} color="text-green-700" />
             <Stat
               label="Uncertain (needs review)"
-              value={uncertain.length}
-              color={uncertain.length > 0 ? 'text-amber-600' : 'text-gray-400'}
+              value={uncertainMeetingCount}
+              color={uncertainMeetingCount > 0 ? 'text-amber-600' : 'text-gray-400'}
             />
             <Stat label="Internal / skipped" value={internalCount} color="text-gray-500" />
             <Stat label="Clients" value={assignedStats.clients} color="text-blue-700" />
           </section>
         )}
 
-        {phase === 'review' && (
-          <ReviewPanel uncertain={uncertain} onConfirm={onReviewConfirm} />
+        {phase === 'ai' && (
+          <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-2">
+            <h2 className="text-lg font-semibold text-gray-800">
+              Classifying with Claude…
+            </h2>
+            <p className="text-sm text-gray-500">
+              {aiProgress.done} / {aiProgress.total} groups classified. The review panel will load
+              when all groups are done.
+            </p>
+            <div className="h-2 bg-gray-100 rounded">
+              <div
+                className="h-2 bg-indigo-500 rounded transition-all"
+                style={{
+                  width: `${
+                    aiProgress.total ? (aiProgress.done / aiProgress.total) * 100 : 0
+                  }%`,
+                }}
+              />
+            </div>
+          </section>
+        )}
+
+        {phase === 'review' && !busy && (
+          <>
+            {aiError && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">
+                <strong>AI classification failed:</strong> {aiError}. Continuing without AI
+                defaults.
+              </div>
+            )}
+            <ReviewPanel
+              groups={groups}
+              aiSuggestions={aiSuggestions}
+              onConfirm={onReviewConfirm}
+            />
+          </>
         )}
 
         {phase === 'done' && (
@@ -199,7 +264,8 @@ export default function App() {
       </main>
 
       <footer className="text-center text-xs text-gray-400 py-6">
-        Blu Mountain RevOps — client-side only, no data leaves your browser.
+        Blu Mountain RevOps — client-side only, no data leaves your browser (except AI calls
+        directly to Anthropic if you provide a key).
       </footer>
     </div>
   );
