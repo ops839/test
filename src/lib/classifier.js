@@ -244,7 +244,15 @@ function matchClientInTitle(title) {
 
 // ─── Main classification ─────────────────────────────────────────────
 /**
- * @returns {{status: 'client'|'uncertain'|'internal', client?: string, candidateDomain?: string, attendees?: object[]}}
+ * Priority, stop at first match:
+ *   1. Title contains a known client name → client
+ *   2. Any attendee domain in map → client
+ *   3. Any attendee with a *business* email (has domain, not BM, not personal) → uncertain
+ *   4. Any attendee that can't be confirmed BM-or-personal → uncertain
+ *      (no domain info AND not a known BM member by name, or zero attendees)
+ *   5. Every attendee is BM or personal → internal
+ *
+ * @returns {{status:'client'|'uncertain'|'internal', client?:string, candidateDomain?:string|null, reason?:string}}
  */
 export function classifyMeeting(meeting) {
   const title = meeting.title || '';
@@ -261,18 +269,28 @@ export function classifyMeeting(meeting) {
     if (mapped) return { status: 'client', client: mapped };
   }
 
-  // 3. Any business email → uncertain.
-  const businessCandidates = attendees.filter(
+  // 3. Business-email attendee → uncertain (with candidate domain).
+  const businessAttendee = attendees.find(
     (a) => a.domain && !isBmDomain(a.domain) && !isPersonalDomain(a.domain)
   );
-  if (businessCandidates.length > 0) {
+  if (businessAttendee) {
     return {
       status: 'uncertain',
-      candidateDomain: businessCandidates[0].domain,
-      attendees,
+      candidateDomain: businessAttendee.domain,
+      reason: 'business-email',
     };
   }
 
-  // 4. All BM or personal → internal.
+  // 4. Unknown attendee (no domain info, not a known BM name) → uncertain.
+  //    Also: zero attendees + no title hit → can't confirm internal → uncertain.
+  if (attendees.length === 0) {
+    return { status: 'uncertain', candidateDomain: null, reason: 'no-attendees' };
+  }
+  const unknownAttendee = attendees.find((a) => !a.isBm && !a.isPersonal);
+  if (unknownAttendee) {
+    return { status: 'uncertain', candidateDomain: null, reason: 'unknown-attendee' };
+  }
+
+  // 5. All BM or personal → internal.
   return { status: 'internal' };
 }
