@@ -24,6 +24,7 @@ import {
 
 const RESUME_KEY = 'slack-backfill:resume-v1';
 const RESUME_INTERVAL = 50;
+const CHANNEL_MAP_KEY = 'slack-backfill:channel-mappings-v1';
 
 // Only day-buckets within this many days of "now" are sent to Claude.
 // Older buckets show in the channel-matches table but aren't summarized
@@ -90,7 +91,17 @@ export default function App() {
   const [parsing, setParsing] = useState(false);
 
   // Channel matches: per-folder dropdown choice. Stored as folderName -> sentinel.
-  const [channelChoices, setChannelChoices] = useState({});
+  // Hydrated from localStorage so reloads preserve the user's mappings.
+  const [channelChoices, setChannelChoices] = useState(() => {
+    try {
+      const raw = localStorage.getItem(CHANNEL_MAP_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  // User has clicked Continue from the channel matches step. Gates step 4+.
+  const [channelsContinued, setChannelsContinued] = useState(false);
 
   // After parse: assignments
   const [assignments, setAssignments] = useState([]); // [{ bucket, clientName }]
@@ -125,6 +136,16 @@ export default function App() {
       // ignore
     }
   }, []);
+
+  // Persist channel mappings on every change. The map is keyed by channel
+  // folder name, which is stable across re-uploads of the same export.
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHANNEL_MAP_KEY, JSON.stringify(channelChoices));
+    } catch {
+      // quota: ignore
+    }
+  }, [channelChoices]);
 
   async function handleXlsxPicked(file) {
     setXlsxError(null);
@@ -171,6 +192,7 @@ export default function App() {
     if (!sourceReady) return;
     setParsing(true);
     setParseError(null);
+    setChannelsContinued(false);
     try {
       const result =
         sourceMode === 'zip'
@@ -199,6 +221,17 @@ export default function App() {
       setParsing(false);
     }
   }
+
+  // Every channel must have an explicit non-empty choice before the user
+  // can continue. Unmatched counts as a valid choice; only the placeholder
+  // (PICK_UNSET) blocks Continue.
+  const allChannelsSet = useMemo(() => {
+    if (!parsed || !xlsxFile) return false;
+    return parsed.channels.every((ch) => {
+      const folderKey = ch.folderPath.split('/').pop();
+      return (channelChoices[folderKey] ?? PICK_UNSET) !== PICK_UNSET;
+    });
+  }, [parsed, xlsxFile, channelChoices]);
 
   // Indices into `assignments` whose date is within the summarization
   // cutoff. Only these get Claude calls and only their summaries land in
@@ -636,10 +669,24 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                disabled={!allChannelsSet || channelsContinued}
+                onClick={() => setChannelsContinued(true)}
+                className="px-4 py-2 rounded-lg bg-bm-accent text-bm-bg text-sm font-medium hover:opacity-90 disabled:opacity-40"
+              >
+                {channelsContinued ? 'Continued' : 'Continue'}
+              </button>
+              {!allChannelsSet && (
+                <p className="text-xs text-bm-muted">
+                  Pick a target sheet for every channel to continue.
+                </p>
+              )}
+            </div>
           </Panel>
         )}
 
-        {parsed && costStats && (
+        {parsed && costStats && channelsContinued && (
           <Panel step={4} title="Cost preview">
             <p className="text-xs text-bm-muted">
               Summarization is capped to the last {CUTOFF_DAYS} days
