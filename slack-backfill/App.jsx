@@ -15,10 +15,28 @@ import {
   estimateTokens,
   estimateCost,
 } from './lib/claude';
-import { loadWorkbook, appendAssignments, downloadWorkbook } from './lib/xlsxBuilder';
+import {
+  loadWorkbook,
+  appendAssignments,
+  downloadWorkbook,
+  readSheetNames,
+} from './lib/xlsxBuilder';
 
 const RESUME_KEY = 'slack-backfill:resume-v1';
 const RESUME_INTERVAL = 50;
+
+// Dropdown sentinels. Empty string means "user has not picked anything yet".
+const PICK_UNSET = '';
+const PICK_UNMATCHED = '__UNMATCHED__';
+const PICK_NEW = '__NEW__';
+
+// Translate a dropdown choice into the sheetName field used by the XLSX
+// builder. null routes to the Unmatched Slack sheet.
+function resolveChoice(choice, channelFolder) {
+  if (choice === PICK_UNMATCHED) return null;
+  if (choice === PICK_NEW) return channelFolder;
+  return choice; // existing sheet name
+}
 
 function todayStr() {
   const d = new Date();
@@ -54,9 +72,14 @@ export default function App() {
   const [folderFiles, setFolderFiles] = useState(null); // FileList from <input webkitdirectory>
   const [folderLabel, setFolderLabel] = useState('');
   const [xlsxFile, setXlsxFile] = useState(null);
+  const [xlsxSheets, setXlsxSheets] = useState([]); // sheet names sorted alphabetically
+  const [xlsxError, setXlsxError] = useState(null);
   const [parsed, setParsed] = useState(null); // { channels, totalMessages, userMap }
   const [parseError, setParseError] = useState(null);
   const [parsing, setParsing] = useState(false);
+
+  // Channel matches: per-folder dropdown choice. Stored as folderName -> sentinel.
+  const [channelChoices, setChannelChoices] = useState({});
 
   // After parse: assignments
   const [assignments, setAssignments] = useState([]); // [{ bucket, clientName }]
@@ -91,6 +114,19 @@ export default function App() {
       // ignore
     }
   }, []);
+
+  async function handleXlsxPicked(file) {
+    setXlsxError(null);
+    setXlsxSheets([]);
+    setXlsxFile(file || null);
+    if (!file) return;
+    try {
+      const names = await readSheetNames(file);
+      setXlsxSheets([...names].sort((a, b) => a.localeCompare(b)));
+    } catch (e) {
+      setXlsxError(e.message || String(e));
+    }
+  }
 
   function handleZipPicked(file) {
     if (!file) return;
@@ -299,8 +335,10 @@ export default function App() {
       const a = assignments[i];
       const r = results[i];
       if (!r || r.error) continue;
+      const choice = channelChoices[a.channelFolder] ?? PICK_UNSET;
+      const sheetName = resolveChoice(choice, a.channelFolder);
       items.push({
-        clientName: a.clientName,
+        sheetName,
         channelName: a.channelName,
         date: a.date,
         summary: r.summary,
@@ -349,9 +387,12 @@ export default function App() {
     for (let i = 0; i < assignments.length; i++) {
       const a = assignments[i];
       if (!map.has(a.channelName)) {
+        const choice = channelChoices[a.channelFolder] ?? PICK_UNSET;
+        const target = resolveChoice(choice, a.channelFolder);
         map.set(a.channelName, {
           channelName: a.channelName,
-          clientName: a.clientName,
+          targetSheet: target,
+          unmatched: choice === PICK_UNMATCHED,
           total: 0,
           done: 0,
           failed: 0,
@@ -366,7 +407,7 @@ export default function App() {
       }
     }
     return [...map.values()];
-  }, [parsed, assignments, results]);
+  }, [parsed, assignments, results, channelChoices]);
 
   const failedCount = useMemo(
     () => Object.values(results).filter((r) => r.error).length,
@@ -493,35 +534,82 @@ export default function App() {
           <input
             type="file"
             accept=".xlsx"
-            onChange={(e) => setXlsxFile(e.target.files?.[0] || null)}
+            onChange={(e) => handleXlsxPicked(e.target.files?.[0] || null)}
             className="block w-full text-sm text-bm-muted file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-bm-border file:text-bm-text hover:file:bg-bm-accent-dim hover:file:text-bm-bg"
           />
           {xlsxFile && (
-            <p className="text-sm text-bm-muted">{xlsxFile.name}</p>
+            <p className="text-sm text-bm-muted">
+              {xlsxFile.name} ({xlsxSheets.length} sheet{xlsxSheets.length !== 1 ? 's' : ''})
+            </p>
           )}
+          {xlsxError && <p className="text-sm text-red-400">{xlsxError}</p>}
         </Panel>
 
         {parsed && (
           <Panel step={3} title="Channel matches">
-            <div className="max-h-64 overflow-y-auto rounded-lg border border-bm-border">
+            {!xlsxFile && (
+              <p className="text-sm text-bm-muted">
+                Upload the engagement log XLSX above to populate the sheet
+                dropdown for each channel.
+              </p>
+            )}
+            {xlsxFile && (
+              <p className="text-xs text-bm-muted">
+                Pick a target sheet for each channel. No auto-matching. Choose
+                Unmatched to send activity to the Unmatched Slack sheet, or
+                create a new sheet using the channel name.
+              </p>
+            )}
+            <div className="max-h-96 overflow-y-auto rounded-lg border border-bm-border">
               <table className="w-full text-sm">
                 <thead className="bg-bm-border/50 sticky top-0">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium">Channel</th>
-                    <th className="text-left px-3 py-2 font-medium">Matched client</th>
+                    <th className="text-left px-3 py-2 font-medium">Target sheet</th>
                     <th className="text-right px-3 py-2 font-medium">Days</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {parsed.channels.map((ch) => (
-                    <tr key={ch.folderPath} className="border-t border-bm-border">
-                      <td className="px-3 py-2 font-mono text-bm-text">#{ch.name}</td>
-                      <td className="px-3 py-2">
-                        <span className="text-bm-muted">Unmatched</span>
-                      </td>
-                      <td className="px-3 py-2 text-right text-bm-muted">{ch.dayBuckets.length}</td>
-                    </tr>
-                  ))}
+                  {parsed.channels.map((ch) => {
+                    const folderKey = ch.folderPath.split('/').pop();
+                    const choice = channelChoices[folderKey] ?? PICK_UNSET;
+                    return (
+                      <tr key={ch.folderPath} className="border-t border-bm-border">
+                        <td className="px-3 py-2 font-mono text-bm-text align-top">
+                          #{ch.name}
+                        </td>
+                        <td className="px-3 py-2">
+                          <select
+                            value={choice}
+                            disabled={!xlsxFile}
+                            onChange={(e) =>
+                              setChannelChoices((prev) => ({
+                                ...prev,
+                                [folderKey]: e.target.value,
+                              }))
+                            }
+                            className="w-full rounded border border-bm-border bg-bm-bg px-2 py-1 text-sm focus:outline-none focus:border-bm-accent disabled:opacity-50"
+                          >
+                            <option value={PICK_UNSET} disabled>
+                              Pick one...
+                            </option>
+                            <option value={PICK_UNMATCHED}>Unmatched</option>
+                            {xlsxSheets.map((name) => (
+                              <option key={name} value={name}>
+                                {name}
+                              </option>
+                            ))}
+                            <option value={PICK_NEW}>
+                              Create new sheet: {folderKey}
+                            </option>
+                          </select>
+                        </td>
+                        <td className="px-3 py-2 text-right text-bm-muted align-top">
+                          {ch.dayBuckets.length}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -671,8 +759,11 @@ export default function App() {
                     <div className="flex justify-between text-xs">
                       <span className="font-mono">
                         #{c.channelName}
-                        {c.clientName && (
-                          <span className="text-bm-muted"> -&gt; {c.clientName}</span>
+                        {c.unmatched && (
+                          <span className="text-bm-muted"> -&gt; Unmatched Slack</span>
+                        )}
+                        {c.targetSheet && (
+                          <span className="text-bm-muted"> -&gt; {c.targetSheet}</span>
                         )}
                       </span>
                       <span className="text-bm-muted">

@@ -2,23 +2,15 @@ import * as XLSX from 'xlsx';
 
 const UNMATCHED_SHEET = 'Unmatched Slack';
 
-// Lowercase a sheet name for fuzzy matching to client names.
-function normalizeSheetName(name) {
-  return (name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-}
-
-function findSheetForClient(workbook, clientName) {
-  const target = normalizeSheetName(clientName);
-  for (const sheetName of workbook.SheetNames) {
-    if (normalizeSheetName(sheetName) === target) return sheetName;
-  }
-  // Fallback: substring match
-  for (const sheetName of workbook.SheetNames) {
-    const norm = normalizeSheetName(sheetName);
-    if (norm.includes(target) || target.includes(norm)) return sheetName;
-  }
-  return null;
-}
+const HEADER_ROW = [
+  'Engagement Date',
+  'Type of Engagement',
+  'Meeting Name',
+  'Attendees',
+  'Summary',
+  'Action Items',
+  'Slack Message',
+];
 
 // Read a sheet's rows as arrays-of-arrays.
 function sheetToAOA(ws) {
@@ -71,9 +63,19 @@ export async function loadWorkbook(file) {
   return XLSX.read(buf, { type: 'array' });
 }
 
+// Read just the sheet names from an XLSX file. Used to populate the
+// channel-mapping dropdown without holding the full workbook in memory.
+export async function readSheetNames(file) {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array', bookSheets: true });
+  return [...wb.SheetNames];
+}
+
 // `assignments` is a list of:
-//   { clientName | null, channelName, date, summary, threadText }
-// `clientName` null means unmatched -> Unmatched Slack sheet.
+//   { sheetName | null, channelName, date, summary, threadText }
+// `sheetName` null routes the row to the Unmatched Slack sheet, with the
+// channel name written into column C. The user picks `sheetName` explicitly
+// in the channel matches step, so we don't fuzzy-match anything here.
 export function appendAssignments(workbook, assignments) {
   const groups = new Map(); // sheetName -> rows[]
 
@@ -81,23 +83,17 @@ export function appendAssignments(workbook, assignments) {
     let sheetName;
     let channelForUnmatched = '';
 
-    if (a.clientName) {
-      sheetName = findSheetForClient(workbook, a.clientName);
-      if (!sheetName) {
-        // Create a new sheet for this client
-        sheetName = a.clientName.slice(0, 31);
-        const ws = aoaToSheet([
-          ['Engagement Date', 'Type of Engagement', 'Meeting Name', 'Attendees', 'Summary', 'Action Items', 'Slack Message'],
-        ]);
+    if (a.sheetName) {
+      sheetName = a.sheetName.slice(0, 31); // Excel sheet-name limit
+      if (!workbook.SheetNames.includes(sheetName)) {
+        const ws = aoaToSheet([HEADER_ROW]);
         XLSX.utils.book_append_sheet(workbook, ws, sheetName);
       }
     } else {
       sheetName = UNMATCHED_SHEET;
       channelForUnmatched = `#${a.channelName}`;
       if (!workbook.SheetNames.includes(sheetName)) {
-        const ws = aoaToSheet([
-          ['Engagement Date', 'Type of Engagement', 'Meeting Name', 'Attendees', 'Summary', 'Action Items', 'Slack Message'],
-        ]);
+        const ws = aoaToSheet([HEADER_ROW]);
         XLSX.utils.book_append_sheet(workbook, ws, sheetName);
       }
     }
