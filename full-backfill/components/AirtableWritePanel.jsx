@@ -122,7 +122,7 @@ export default function AirtableWritePanel({ rows, onComplete }) {
   return (
     <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-4">
       <h2 className="text-base font-semibold text-bm-text">
-        <span className="text-bm-accent mr-2">4.</span>Write to Airtable
+        <span className="text-bm-accent mr-2">6.</span>Write to Airtable
       </h2>
 
       {phase === 'needs-secrets' && (

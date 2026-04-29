@@ -430,6 +430,169 @@ console.log('\ncheckpoint:');
     'stale checkpoint is removed from storage');
 }
 
+// ─── mergeRows: buildSybillRows ─────────────────────────────────────────────
+
+import { buildSybillRows, buildSlackRows } from './lib/mergeRows.js';
+
+console.log('\nmergeRows buildSybillRows:');
+
+{
+  const autoAssigned = [
+    { meeting: { date: '2026-04-01', title: 'Athena Kick-off', attendees: 'alice@athena.com', summary: 'Great meeting', actionItems: 'Follow up' }, client: 'Athena' },
+    { meeting: { date: '2026-04-02', title: 'Bushel Review', attendees: 'bob@bushel.ag', summary: 'Good progress', actionItems: 'Ship it' }, client: 'Bushel' },
+  ];
+  const rows = buildSybillRows(autoAssigned, []);
+  assert(rows.length === 2, `buildSybillRows produces 2 rows (got ${rows.length})`);
+  assert(rows[0].targetClient === 'Athena', 'first row targets Athena');
+  assert(rows[1].targetClient === 'Bushel', 'second row targets Bushel');
+  assert(rows[0].fields['Type of Engagement'] === 'Meeting', 'Sybill row type is Meeting');
+  assert(rows[0].fields['Meeting Name'] === 'Athena Kick-off', 'Meeting Name set correctly');
+  assert(rows[0].fields['Slack Message'] === '', 'Sybill row has empty Slack Message');
+}
+
+{
+  const reviewAssigned = [
+    { meeting: { date: '2026-04-03', title: 'InnoVint sync', attendees: 'carol@innovint.us', summary: 'Discussed roadmap', actionItems: 'Send deck' }, client: 'InnoVint' },
+  ];
+  const rows = buildSybillRows([], reviewAssigned);
+  assert(rows.length === 1, 'review-assigned rows included');
+  assert(rows[0].targetClient === 'InnoVint', 'review-assigned client set');
+}
+
+{
+  const rows = buildSybillRows([], []);
+  assert(rows.length === 0, 'empty inputs return empty rows');
+}
+
+// ─── mergeRows: buildSlackRows ───────────────────────────────────────────────
+
+console.log('\nmergeRows buildSlackRows:');
+
+const mockBucket = (text) => ({
+  channelName: 'test-channel',
+  date: '2026-04-20',
+  messages: [{ time: '09:00', author: 'alice', text, replies: [] }],
+});
+
+{
+  const slackAssignments = [
+    { targetClient: 'Athena', channelName: 'athena-gen', date: '2026-04-20', eligible: true, bucket: mockBucket('Hello!') },
+    { targetClient: 'Athena', channelName: 'athena-gen', date: '2025-12-01', eligible: false, bucket: mockBucket('Old msg') },
+    { targetClient: 'Bushel', channelName: 'bushel-eng', date: '2026-04-21', eligible: true, bucket: mockBucket('LGTM') },
+  ];
+  const summaries = {
+    0: { summary: 'Alice greeted in Athena channel.' },
+    // 1: ineligible — no summary
+    2: { summary: 'Bob approved changes in Bushel.' },
+  };
+  const rows = buildSlackRows(slackAssignments, summaries);
+  assert(rows.length === 2, `buildSlackRows produces 2 rows (got ${rows.length})`);
+  assert(rows[0].targetClient === 'Athena', 'first Slack row targets Athena');
+  assert(rows[1].targetClient === 'Bushel', 'second Slack row targets Bushel');
+  assert(rows[0].fields['Type of Engagement'] === 'Slack messages', 'Slack row type correct');
+  assert(rows[0].fields['Summary'] === 'Alice greeted in Athena channel.', 'summary text set');
+  assert(typeof rows[0].fields['Slack Message'] === 'string' && rows[0].fields['Slack Message'].includes('alice'), 'Slack Message contains formatted thread');
+  assert(rows[0].fields['Meeting Name'] === '', 'Slack row has empty Meeting Name');
+}
+
+{
+  // Error summaries are excluded
+  const slackAssignments = [
+    { targetClient: 'Athena', channelName: 'c', date: '2026-04-20', eligible: true, bucket: mockBucket('hi') },
+  ];
+  const summaries = { 0: { error: 'Claude API 429: rate limit' } };
+  const rows = buildSlackRows(slackAssignments, summaries);
+  assert(rows.length === 0, 'error summaries are excluded from Slack rows');
+}
+
+{
+  // No targetClient — excluded
+  const slackAssignments = [
+    { targetClient: null, channelName: 'unmapped', date: '2026-04-20', eligible: true, bucket: mockBucket('hi') },
+  ];
+  const summaries = { 0: { summary: 'Test summary.' } };
+  const rows = buildSlackRows(slackAssignments, summaries);
+  assert(rows.length === 0, 'null targetClient excluded from Slack rows');
+}
+
+// ─── full pipeline smoke test ────────────────────────────────────────────────
+
+console.log('\nfull pipeline smoke test:');
+
+{
+  setBucketOverride(new TokenBucket(1000, 1000));
+
+  // Fixture data
+  const sybillAuto = [
+    { meeting: { date: '2026-04-01', title: 'Athena Q2', attendees: 'a@athena.com', summary: 'Q2 review', actionItems: 'Send report' }, client: 'Athena' },
+    { meeting: { date: '2026-04-02', title: 'Athena follow-up', attendees: 'a@athena.com', summary: 'Follow-up items', actionItems: 'Schedule call' }, client: 'Athena' },
+    { meeting: { date: '2026-04-03', title: 'Bushel Q2', attendees: 'b@bushel.ag', summary: 'Bushel progress', actionItems: 'Update roadmap' }, client: 'Bushel' },
+  ];
+
+  const slackAssignmentsFixture = [
+    { targetClient: 'Athena', channelName: 'athena', date: '2026-04-20', eligible: true, bucket: mockBucket('Athena Slack msg') },
+    { targetClient: 'Bushel', channelName: 'bushel', date: '2026-04-21', eligible: true, bucket: mockBucket('Bushel Slack msg') },
+    { targetClient: 'Athena', channelName: 'athena', date: '2025-01-01', eligible: false, bucket: mockBucket('Old msg') },
+  ];
+
+  // Stubbed summaries (simulate RunPanel output — only eligible entries)
+  const slackSummariesFixture = {
+    0: { summary: 'Athena Slack summary.' },
+    1: { summary: 'Bushel Slack summary.' },
+    // 2: ineligible, skipped
+  };
+
+  // Build rows
+  const sybillRows = buildSybillRows(sybillAuto, []);
+  const slackRows = buildSlackRows(slackAssignmentsFixture, slackSummariesFixture);
+  const merged = [...sybillRows, ...slackRows];
+
+  assert(sybillRows.length === 3, `3 Sybill rows (got ${sybillRows.length})`);
+  assert(slackRows.length === 2, `2 Slack rows (got ${slackRows.length})`);
+  assert(merged.length === 5, `5 merged rows total (got ${merged.length})`);
+
+  // Group by client (mirrors AirtableWritePanel logic)
+  const byClient = new Map();
+  for (const r of merged) {
+    if (!r.targetClient) continue;
+    if (!byClient.has(r.targetClient)) byClient.set(r.targetClient, []);
+    byClient.get(r.targetClient).push(r);
+  }
+  assert(byClient.get('Athena').length === 3, `Athena gets 3 rows (2 Sybill + 1 Slack), got ${byClient.get('Athena').length}`);
+  assert(byClient.get('Bushel').length === 2, `Bushel gets 2 rows (1 Sybill + 1 Slack), got ${byClient.get('Bushel').length}`);
+
+  // Mock Airtable write for each client
+  const insertLog = {};
+  setFetchOverride(async (url, options) => {
+    const method = options?.method ?? 'GET';
+    const u = url.toString();
+    if (method === 'GET') {
+      return { ok: true, status: 200, json: async () => ({ records: [] }), text: async () => '' };
+    }
+    if (method === 'DELETE') {
+      return { ok: true, status: 200, json: async () => ({ records: [] }), text: async () => '' };
+    }
+    if (method === 'POST') {
+      const body = JSON.parse(options.body);
+      const table = decodeURIComponent(u.split('/').pop().split('?')[0]);
+      insertLog[table] = (insertLog[table] ?? 0) + body.records.length;
+      return { ok: true, status: 200, json: async () => ({ records: body.records.map((_, i) => ({ id: `rec${i}` })) }), text: async () => '' };
+    }
+    return { ok: false, status: 500, json: async () => ({}), text: async () => 'unhandled' };
+  });
+
+  for (const [client, clientRows] of byClient) {
+    await wipeTable('appTest', client, 'patFake');
+    await insertRecords('appTest', client, clientRows.map((r) => r.fields), 'patFake');
+  }
+
+  assert(insertLog['Athena'] === 3, `Athena table received 3 inserts (got ${insertLog['Athena']})`);
+  assert(insertLog['Bushel'] === 2, `Bushel table received 2 inserts (got ${insertLog['Bushel']})`);
+
+  setFetchOverride(null);
+  setBucketOverride(null);
+}
+
 // ─── summary ────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

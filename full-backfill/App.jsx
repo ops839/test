@@ -1,27 +1,15 @@
 import { useCallback, useState } from 'react';
+import { DEFAULT_MODEL } from '../slack-backfill/lib/claude.js';
 import { classifyMeeting } from '../src/lib/classifier.js';
 import { groupUncertain } from '../src/lib/grouping.js';
+import { buildSybillRows, buildSlackRows } from './lib/mergeRows.js';
 import SybillSourcePanel from './components/SybillSourcePanel.jsx';
 import SlackSourcePanel from './components/SlackSourcePanel.jsx';
 import SybillReview from './components/SybillReview.jsx';
 import ChannelMatchPanel from './components/ChannelMatchPanel.jsx';
+import CostPreview from './components/CostPreview.jsx';
+import RunPanel from './components/RunPanel.jsx';
 import AirtableWritePanel from './components/AirtableWritePanel.jsx';
-
-// Build final Airtable-ready rows from auto-classified and review-confirmed meetings.
-function buildSybillRows(autoAssigned, reviewAssigned) {
-  return [...autoAssigned, ...reviewAssigned].map(({ meeting, client }) => ({
-    targetClient: client,
-    fields: {
-      'Engagement Date': meeting.date,
-      'Type of Engagement': 'Meeting',
-      'Meeting Name': meeting.title,
-      'Attendees': meeting.attendees,
-      'Summary': meeting.summary,
-      'Action Items': meeting.actionItems,
-      'Slack Message': '',
-    },
-  }));
-}
 
 export default function App() {
   // ── Sybill source / cutoff stats (Phase 2) ──────────────────────────────
@@ -35,6 +23,11 @@ export default function App() {
   // ── Slack source + channel mapping (Phases 2 & 4) ───────────────────────
   const [slackParsed, setSlackParsed] = useState(null);
   const [slackAssignments, setSlackAssignments] = useState(null);
+
+  // ── AI run + merge (Phase 6) ─────────────────────────────────────────────
+  const [costConfirmed, setCostConfirmed] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [mergedRows, setMergedRows] = useState(null);
 
   // ── Callbacks ────────────────────────────────────────────────────────────
   const handleSybillParsed = useCallback(({ meetings, droppedCount, totalCount }) => {
@@ -78,8 +71,17 @@ export default function App() {
     setSlackAssignments(assignments);
   }, []);
 
+  const handleCostConfirm = useCallback((modelId) => {
+    setSelectedModel(modelId);
+    setCostConfirmed(true);
+  }, []);
+
+  const handleRunComplete = useCallback((summaries) => {
+    const sRows = buildSlackRows(slackAssignments ?? [], summaries);
+    setMergedRows([...(sybillRows ?? []), ...sRows]);
+  }, [slackAssignments, sybillRows]);
+
   // ── Derived state ─────────────────────────────────────────────────────────
-  // Merge waits on both branches completing.
   const bothReady = sybillRows !== null && slackAssignments !== null;
   const needsReview = sybillGroups !== null && sybillGroups.length > 0 && sybillRows === null;
   const classifyDone = sybillAutoAssigned !== null;
@@ -156,27 +158,41 @@ export default function App() {
             </section>
           )}
 
-          {/* Step 3: both branches done — merge point + Airtable write */}
+          {/* Step 3: both branches done — info */}
           {bothReady && (
-            <>
-              <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-1">
-                <h2 className="text-base font-semibold text-bm-text">
-                  <span className="text-bm-accent mr-2">3.</span>Both sources ready
-                </h2>
-                <p className="text-xs text-bm-muted">
-                  {sybillRows.length} Sybill row{sybillRows.length !== 1 ? 's' : ''}
-                  {' · '}
-                  {eligibleAssignments.length} eligible Slack bucket
-                  {eligibleAssignments.length !== 1 ? 's' : ''}
-                </p>
-                <p className="text-xs text-bm-muted">
-                  AI summarization wiring lands in the next phase. Phase 5 writes
-                  Sybill rows now; Slack rows join in Phase 6.
-                </p>
-              </section>
+            <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-1">
+              <h2 className="text-base font-semibold text-bm-text">
+                <span className="text-bm-accent mr-2">3.</span>Both sources ready
+              </h2>
+              <p className="text-xs text-bm-muted">
+                {sybillRows.length} Sybill row{sybillRows.length !== 1 ? 's' : ''}
+                {' · '}
+                {eligibleAssignments.length} eligible Slack bucket
+                {eligibleAssignments.length !== 1 ? 's' : ''}
+              </p>
+            </section>
+          )}
 
-              <AirtableWritePanel rows={sybillRows} />
-            </>
+          {/* Step 4: AI cost preview */}
+          {bothReady && !costConfirmed && (
+            <CostPreview
+              slackAssignments={slackAssignments}
+              onConfirm={handleCostConfirm}
+            />
+          )}
+
+          {/* Step 5: AI run */}
+          {costConfirmed && mergedRows === null && (
+            <RunPanel
+              slackAssignments={slackAssignments}
+              model={selectedModel}
+              onComplete={handleRunComplete}
+            />
+          )}
+
+          {/* Step 6: Airtable write */}
+          {mergedRows !== null && (
+            <AirtableWritePanel rows={mergedRows} />
           )}
 
         </div>
