@@ -3,7 +3,7 @@
 Browser-based web app that parses Sybill meeting summaries from Slack export JSON files,
 classifies each meeting to a client, and exports a single XLSX file with one sheet per client.
 
-100% client-side — no backend, no OAuth, no API calls, no LLMs. Built for **Blu Mountain RevOps**.
+100% client-side. No backend, no OAuth, no API calls, no LLMs. Built for **Blu Mountain RevOps**.
 
 ## How it works
 
@@ -44,7 +44,7 @@ A second browser-only tool lives at [`slack-backfill/`](slack-backfill/) and is
 served at `/slack-backfill/` once deployed. It ingests a slackdump v3+ ZIP,
 generates Claude AI summaries of daily Slack channel activity, and appends rows
 to an existing client engagement log XLSX. The Anthropic API key is held in
-memory only — never written to localStorage.
+memory only, never written to localStorage.
 
 ## Deployment
 
@@ -55,4 +55,4 @@ GitHub Actions publishes the production build to GitHub Pages on push to `main`.
 - React + Vite
 - Tailwind CSS
 - SheetJS (`xlsx`) for XLSX generation
-- All processing runs in your browser — files never leave your machine.
+- All processing runs in your browser. Files never leave your machine.

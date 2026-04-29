@@ -73,7 +73,7 @@ export default function FileDropZone({ onFilesLoaded, disabled }) {
           Drop Slack export JSON files here
         </p>
         <p className="text-sm text-gray-500 mt-1">
-          or click to browse — accepts multiple .json files
+          or click to browse. Accepts multiple .json files.
         </p>
         {fileCount > 0 && (
           <p className="text-sm text-green-600 mt-3 font-medium">

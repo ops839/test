@@ -49,7 +49,7 @@ function Stat({ label, value }) {
 
 export default function App() {
   // Step state machine
-  // sourceMode: 'zip' | 'folder'  — which input the user picked last
+  // sourceMode: 'zip' | 'folder'. Tracks which input the user picked last.
   const [sourceMode, setSourceMode] = useState('zip');
   const [zipFile, setZipFile] = useState(null);
   const [folderFiles, setFolderFiles] = useState(null); // FileList from <input webkitdirectory>
@@ -258,7 +258,7 @@ export default function App() {
             }),
           );
         } catch {
-          // quota — ignore
+          // quota: ignore
         }
       }
     });
@@ -391,7 +391,7 @@ export default function App() {
         <div className="max-w-4xl mx-auto px-6 py-5">
           <h1 className="text-2xl font-semibold">Slack Backfill</h1>
           <p className="text-sm text-bm-muted mt-1">
-            Blu Mountain RevOps — Summarize Slack channel activity and append to the engagement log
+            Blu Mountain RevOps. Summarize Slack channel activity and append to the engagement log.
           </p>
         </div>
       </header>
@@ -722,7 +722,7 @@ export default function App() {
       </main>
 
       <footer className="text-center text-xs text-bm-muted py-6">
-        Blu Mountain RevOps — blumountain.me
+        Blu Mountain RevOps | blumountain.me
       </footer>
     </div>
   );

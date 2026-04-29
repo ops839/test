@@ -71,7 +71,7 @@ function extractAttendees(blocks) {
   );
   if (!block) return '';
 
-  // Context block — elements array with plain_text
+  // Context block: elements array with plain_text
   if (block.elements && Array.isArray(block.elements)) {
     const el = block.elements.find((e) => e.type === 'plain_text' || e.text);
     if (el) {

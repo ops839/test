@@ -31,7 +31,7 @@ export default function SelectExport({ assigned, selected, onChange }) {
         <h2 className="text-lg font-semibold text-gray-800">Select clients to export</h2>
         <p className="text-sm text-gray-500 mt-1">
           Every client with at least one assigned meeting is listed below. Uncheck a client to
-          exclude it from the XLSX entirely — unchecked clients get no sheet.
+          exclude it from the XLSX entirely. Unchecked clients get no sheet.
         </p>
       </div>
 

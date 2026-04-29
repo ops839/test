@@ -3,7 +3,7 @@
  *
  * Applied AFTER the full-client-name substring check and BEFORE the
  * domain-map fallback. Matched as whole words (word-boundary regex),
- * case-insensitive. Extend this file — do not edit classifier.js.
+ * case-insensitive. Extend this file. Do not edit classifier.js.
  *
  * Rules:
  *   - Canonical name on the right MUST appear in KNOWN_CLIENTS.

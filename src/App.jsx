@@ -174,7 +174,7 @@ export default function App() {
           <FileDropZone onFilesLoaded={onFilesLoaded} disabled={phase !== 'upload'} />
           {files.length > 0 && (
             <p className="text-sm text-gray-500">
-              {files.length} file{files.length !== 1 ? 's' : ''} loaded — {totalFileMessages}{' '}
+              {files.length} file{files.length !== 1 ? 's' : ''} loaded, {totalFileMessages}{' '}
               total Slack messages.
             </p>
           )}
@@ -282,7 +282,7 @@ export default function App() {
       </main>
 
       <footer className="text-center text-xs text-gray-400 py-6">
-        Blu Mountain RevOps — client-side only, no data leaves your browser (except AI calls
+        Blu Mountain RevOps. Client-side only, no data leaves your browser (except AI calls
         directly to Anthropic if you provide a key).
       </footer>
     </div>

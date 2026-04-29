@@ -26,7 +26,7 @@ function SampleTitles({ meetings }) {
 
 export default function ReviewPanel({ groups, aiSuggestions, onConfirm }) {
   // decisions[groupId] = explicit user choice (client | INTERNAL | SKIP). Undefined means
-  // "no user choice yet" — we fall back to AI suggestion at read time so the dropdown
+  // "no user choice yet". We fall back to AI suggestion at read time so the dropdown
   // reflects the AI default without copying it into state (avoids set-state-in-effect).
   const [decisions, setDecisions] = useState({});
   const [checked, setChecked] = useState({});
@@ -112,7 +112,7 @@ export default function ReviewPanel({ groups, aiSuggestions, onConfirm }) {
             Review uncertain meetings ({groups.length} group{groups.length !== 1 ? 's' : ''})
           </h2>
           <p className="text-sm text-gray-500 mt-1">
-            Each group shares a domain or meeting name — one decision per group applies to every
+            Each group shares a domain or meeting name. One decision per group applies to every
             meeting in it. Assign a client, mark Internal, or Skip. Anything undecided at Confirm is
             skipped.
           </p>
@@ -188,7 +188,7 @@ export default function ReviewPanel({ groups, aiSuggestions, onConfirm }) {
                     <SampleTitles meetings={g.meetings} />
                   </td>
                   <td className="p-2 text-gray-500 text-xs max-w-xs truncate">
-                    {g.meetings[0]?.attendees || '—'}
+                    {g.meetings[0]?.attendees || '(none)'}
                   </td>
                   <td className="p-2">
                     <select
@@ -196,7 +196,7 @@ export default function ReviewPanel({ groups, aiSuggestions, onConfirm }) {
                       onChange={(e) => setDecision(g.id, e.target.value)}
                       className="w-full border border-gray-300 rounded-md px-2 py-1 text-sm bg-white"
                     >
-                      <option value="">— choose —</option>
+                      <option value="">(choose)</option>
                       <option value={INTERNAL}>Internal</option>
                       <option value={SKIP}>Skip</option>
                       {ai && (
@@ -213,7 +213,7 @@ export default function ReviewPanel({ groups, aiSuggestions, onConfirm }) {
                       </optgroup>
                     </select>
                     {isAiDefault && (
-                      <p className="text-[11px] text-indigo-600 mt-1">AI default — confirm below.</p>
+                      <p className="text-[11px] text-indigo-600 mt-1">AI default. Confirm below.</p>
                     )}
                   </td>
                 </tr>

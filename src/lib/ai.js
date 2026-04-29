@@ -2,7 +2,7 @@
  * Anthropic API wrapper for uncertain-meeting classification.
  *
  * Browser-direct, no SDK. Uses `anthropic-dangerous-direct-browser-access: true`
- * — tradeoff: the key lives in the user's browser/localStorage. This is only
+ * Tradeoff: the key lives in the user's browser/localStorage. This is only
  * acceptable for personal/single-user tools, which is our scope.
  *
  * Prompt caching: cache_control is set on the static system block. Sonnet 4.6's

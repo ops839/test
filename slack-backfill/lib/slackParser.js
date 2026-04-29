@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 
-// Parse a slackdump v3+ export (from a ZIP file or a directly selected folder)
-// into a flat list of day-buckets.
+// Parse a slackdump v3+ export (from a ZIP file or a directly selected
+// folder) into a flat list of day-buckets.
 //
 // Returns:
 //   {
@@ -12,29 +12,48 @@ import JSZip from 'jszip';
 //
 // A day-bucket looks like:
 //   { channelName, date: "YYYY-MM-DD", messages: [{ author, text, ts, permalink, replies }] }
+//
+// User profiles are harvested from per-message `user_profile` blocks.
+// A separate `users.json` is NOT required.
 
 const ALLOWED_SUBTYPES = new Set([null, undefined, '', 'thread_broadcast']);
 
-function buildUserMap(usersJson) {
-  const map = new Map();
-  if (!Array.isArray(usersJson)) return map;
+// Add a single profile to the userMap if not already present.
+function harvestProfile(userMap, msg) {
+  const uid = msg?.user || msg?.bot_id || msg?.user_profile?.id;
+  if (!uid) return;
+  if (userMap.has(uid)) return;
+  const p = msg.user_profile;
+  if (!p) return;
+  const display =
+    p.display_name?.trim() ||
+    p.real_name?.trim() ||
+    p.first_name?.trim() ||
+    p.name ||
+    null;
+  if (display) userMap.set(uid, display);
+}
+
+// If a legacy users.json is present, fold its entries in too (does not
+// override profiles already harvested from messages).
+function mergeUsersJson(userMap, usersJson) {
+  if (!Array.isArray(usersJson)) return;
   for (const u of usersJson) {
     const id = u.id;
-    if (!id) continue;
+    if (!id || userMap.has(id)) continue;
     const profile = u.profile || {};
     const display =
       profile.display_name?.trim() ||
       profile.real_name?.trim() ||
       u.real_name?.trim() ||
       u.name ||
-      id;
-    map.set(id, display);
+      null;
+    if (display) userMap.set(id, display);
   }
-  return map;
 }
 
 // Strip Slack formatting tokens we don't want to preserve raw.
-// Resolves <@UID> -> @display, <#CID|name> -> #name, <url|label> -> label.
+// Resolves <@UID> to @display, <#CID|name> to #name, <url|label> to label.
 function resolveFormatting(text, userMap) {
   if (!text) return '';
   return text
@@ -53,7 +72,7 @@ function resolveFormatting(text, userMap) {
 }
 
 function tsToDate(ts) {
-  // Slack ts is like "1714325512.000123" — UTC seconds. Use UTC date.
+  // Slack ts is like "1714325512.000123", UTC seconds. Use UTC date.
   const seconds = parseFloat(ts);
   if (!Number.isFinite(seconds)) return null;
   const d = new Date(seconds * 1000);
@@ -93,7 +112,13 @@ function isAllowedMessage(msg) {
 function buildMessageRecord(msg, userMap, channelId, workspaceUrl) {
   const d = tsToDate(msg.ts);
   if (!d) return null;
-  const author = userMap.get(msg.user) || msg.username || msg.user || 'unknown';
+  const author =
+    userMap.get(msg.user) ||
+    msg.user_profile?.display_name?.trim() ||
+    msg.user_profile?.real_name?.trim() ||
+    msg.username ||
+    msg.user ||
+    'unknown';
   return {
     author,
     text: resolveFormatting(msg.text, userMap),
@@ -110,8 +135,8 @@ function buildMessageRecord(msg, userMap, channelId, workspaceUrl) {
 // ─── Source abstractions ───────────────────────────────────────────
 //
 // A Source exposes:
-//   listJsonPaths(): string[]   — relative paths of all .json files
-//   readJson(path): Promise<any> — parsed JSON for that path
+//   listJsonPaths(): string[]    relative paths of all .json files
+//   readJson(path): Promise<any> parsed JSON for that path
 
 class ZipSource {
   constructor(zip) {
@@ -154,24 +179,14 @@ class FolderSource {
 
 // Slackdump v3+ writes each channel as a folder with daily JSON files
 // named YYYY-MM-DD.json. Threads can be inline (parent.replies array of
-// full message objects) or in a sibling threads/ folder. We look for both.
-async function readChannelMessages(source, channelFolder, userMap, channelId, workspaceUrl) {
+// full message objects) or in a sibling threads/ folder.
+function processChannelFiles(channelFolder, files, userMap, channelId, workspaceUrl) {
   const allMessages = [];
   const threadsByParentTs = new Map();
 
-  const filePaths = source
-    .listJsonPaths()
-    .filter((p) => p.startsWith(channelFolder + '/'));
-
-  for (const relativePath of filePaths) {
-    const fileName = relativePath.slice(channelFolder.length + 1);
+  for (const { path, payload } of files) {
+    const fileName = path.slice(channelFolder.length + 1);
     const isThreadFile = fileName.startsWith('threads/') || fileName.includes('/threads/');
-    let payload;
-    try {
-      payload = await source.readJson(relativePath);
-    } catch {
-      continue;
-    }
     const messages = Array.isArray(payload) ? payload : payload.messages || [];
 
     if (isThreadFile) {
@@ -191,7 +206,12 @@ async function readChannelMessages(source, channelFolder, userMap, channelId, wo
       // Inline replies (slackdump sometimes embeds them directly)
       if (Array.isArray(m.replies_full) && m.replies_full.length) {
         threadsByParentTs.set(m.ts, [...(threadsByParentTs.get(m.ts) || []), ...m.replies_full]);
-      } else if (Array.isArray(m.replies) && m.replies.length && typeof m.replies[0] === 'object' && m.replies[0].text) {
+      } else if (
+        Array.isArray(m.replies) &&
+        m.replies.length &&
+        typeof m.replies[0] === 'object' &&
+        m.replies[0].text
+      ) {
         threadsByParentTs.set(m.ts, [...(threadsByParentTs.get(m.ts) || []), ...m.replies]);
       }
     }
@@ -243,62 +263,48 @@ function groupByDay(messages, channelName) {
 async function parseFromSource(source) {
   const allPaths = source.listJsonPaths();
 
-  // Locate users.json and channels.json (may be nested under a top folder)
-  let usersPath = null;
-  let channelsPath = null;
-  let rootPrefix = '';
-
-  for (const path of allPaths) {
-    const base = path.split('/').pop();
-    if (base === 'users.json' && (!usersPath || path.length < usersPath.length)) {
-      usersPath = path;
-      rootPrefix = path.slice(0, path.length - 'users.json'.length);
-    }
-    if (base === 'channels.json' && !channelsPath) {
-      channelsPath = path;
-    }
-  }
-
-  if (!usersPath) {
-    throw new Error('users.json not found — is this a slackdump export?');
-  }
-
-  const usersJson = await source.readJson(usersPath);
-  const userMap = buildUserMap(usersJson);
-
-  let channelsJson = [];
-  if (channelsPath) {
-    try {
-      channelsJson = await source.readJson(channelsPath);
-    } catch {
-      channelsJson = [];
-    }
-  }
-  const channelMetaByName = new Map();
-  for (const c of channelsJson) {
-    if (c.name) channelMetaByName.set(c.name, c);
-  }
-
-  // Discover channel folders: any direct folder under rootPrefix that
-  // contains a YYYY-MM-DD.json file. Files at the root level (no parent
-  // folder beneath rootPrefix) are skipped — we need a folder name to use
-  // as the channel name.
+  // Discover channel folders: parents of YYYY-MM-DD.json files.
+  // The channel folder is the directory immediately containing the date file.
   const channelFolders = new Set();
   for (const path of allPaths) {
-    if (!path.startsWith(rootPrefix)) continue;
-    const rel = path.slice(rootPrefix.length);
-    const parts = rel.split('/');
+    const parts = path.split('/');
     if (parts.length < 2) continue;
     const fileName = parts[parts.length - 1];
     if (!/^\d{4}-\d{2}-\d{2}\.json$/.test(fileName)) continue;
-    const folderPath = rootPrefix + parts[0];
+    const folderPath = parts.slice(0, parts.length - 1).join('/');
     channelFolders.add(folderPath);
   }
 
-  const workspaceUrl = null;
+  // Source validity rule: at least one channel folder with at least one
+  // .json file. Nothing else is required.
+  if (channelFolders.size === 0) {
+    throw new Error(
+      'No slackdump channel data found. Expected at least one folder containing YYYY-MM-DD.json files.',
+    );
+  }
 
-  const channels = [];
-  let totalMessages = 0;
+  // Optional channels.json: gives us channel ID for permalink construction
+  // and the canonical channel name.
+  const channelMetaByName = new Map();
+  for (const path of allPaths) {
+    if (path.split('/').pop() !== 'channels.json') continue;
+    try {
+      const channelsJson = await source.readJson(path);
+      if (Array.isArray(channelsJson)) {
+        for (const c of channelsJson) {
+          if (c.name) channelMetaByName.set(c.name, c);
+        }
+      }
+    } catch {
+      // ignore malformed channels.json
+    }
+  }
+
+  // Pre-load every channel JSON file and harvest user profiles in the same
+  // pass. Holding parsed payloads in memory lets us resolve mentions across
+  // channels without re-reading files.
+  const userMap = new Map();
+  const channelData = [];
 
   for (const folderPath of [...channelFolders].sort()) {
     const folderName = folderPath.split('/').pop();
@@ -306,11 +312,59 @@ async function parseFromSource(source) {
     const channelId = channelMeta?.id || null;
     const channelName = channelMeta?.name || folderName;
 
-    const messages = await readChannelMessages(source, folderPath, userMap, channelId, workspaceUrl);
-    const dayBuckets = groupByDay(messages, channelName);
+    const filePaths = allPaths.filter(
+      (p) => p.startsWith(folderPath + '/') && p.endsWith('.json'),
+    );
+    const files = [];
+    for (const path of filePaths) {
+      let payload;
+      try {
+        payload = await source.readJson(path);
+      } catch {
+        continue;
+      }
+      const messages = Array.isArray(payload) ? payload : payload.messages || [];
+      for (const m of messages) {
+        harvestProfile(userMap, m);
+      }
+      files.push({ path, payload });
+    }
+    channelData.push({ folderPath, channelName, channelId, files });
+  }
+
+  // Optional legacy users.json: fold in but never override harvested entries.
+  for (const path of allPaths) {
+    if (path.split('/').pop() !== 'users.json') continue;
+    try {
+      const usersJson = await source.readJson(path);
+      mergeUsersJson(userMap, usersJson);
+    } catch {
+      // ignore
+    }
+  }
+
+  const workspaceUrl = null;
+
+  const channels = [];
+  let totalMessages = 0;
+
+  for (const ch of channelData) {
+    const messages = processChannelFiles(
+      ch.folderPath,
+      ch.files,
+      userMap,
+      ch.channelId,
+      workspaceUrl,
+    );
+    const dayBuckets = groupByDay(messages, ch.channelName);
     const msgCount = messages.reduce((n, m) => n + 1 + m.replies.length, 0);
     totalMessages += msgCount;
-    channels.push({ name: channelName, folderPath, dayBuckets, messageCount: msgCount });
+    channels.push({
+      name: ch.channelName,
+      folderPath: ch.folderPath,
+      dayBuckets,
+      messageCount: msgCount,
+    });
   }
 
   return { channels, totalMessages, userMap };

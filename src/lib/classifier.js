@@ -4,7 +4,7 @@
  * Priority (stop at first match):
  *   1a. Full client name as case-insensitive substring in title.
  *       Exception: "Infinite Renewals" loses to any other full or alias match.
- *   1b. Title alias (whole-word match from TITLE_ALIASES — see aliases.js).
+ *   1b. Title alias (whole-word match from TITLE_ALIASES, see aliases.js).
  *   2.  Any attendee email domain matches the domain-to-client map.
  *   3.  Any attendee has a business email (not BM, not personal) → uncertain.
  *   4.  Any attendee that can't be confirmed BM-or-personal → uncertain.

@@ -72,7 +72,7 @@ export default function Settings({ settings, onChange }) {
             title={dotLabel}
           />
           <span className="text-xs text-gray-500 font-normal">
-            {settings.apiKey ? 'set' : 'not set'} — AI classification of uncertain groups{' '}
+            {settings.apiKey ? 'set' : 'not set'}. AI classification of uncertain groups{' '}
             {settings.apiKey ? 'enabled' : 'disabled'}
           </span>
         </span>
@@ -118,7 +118,7 @@ export default function Settings({ settings, onChange }) {
             <code className="text-[11px] bg-gray-100 px-1 rounded">
               anthropic-dangerous-direct-browser-access
             </code>{' '}
-            — safe for personal single-user use, not for deployments where other people share your
+            header. Safe for personal single-user use, not for deployments where other people share your
             browser. Leave blank to skip AI classification entirely; deterministic rules still run.
           </p>
           {status === 'fail' && (
