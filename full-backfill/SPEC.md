@@ -23,7 +23,7 @@ work executes in 6 phases, each with its own commit and verification gate.
 | Airtable shape | One table per client | Mirrors the existing per-sheet XLSX layout. Hard wipe is per-table. Adding a client = creating a table at runtime — see "Missing tables" below for what the tool actually does. |
 | Cutoff configurability | Hardcoded constants | No Settings UI. Edit `lib/cutoffs.js` to change. |
 | Partial AI failure | Save partial + "Retry failed" button | Successful summaries persist to localStorage. UI shows failure count and a button to re-run only the failed indices. Separate "Continue with partial" button writes what succeeded and leaves failed buckets out of Airtable. |
-| Anthropic concurrency | 32 workers (Tier 3+) | Exponential backoff on 429/5xx, max 5 retries. |
+| Anthropic concurrency | 16 workers | Well below the Tier 3+ ceiling for 500-1000 buckets, leaves headroom on output-token-per-minute limits. Exponential backoff on 429/5xx, max 5 retries. |
 | Airtable PAT handling | Hardcoded in source | User confirmed repo and Pages deploy are private. PAT lives in `lib/secrets.js` (gitignored — see "Secrets handling" below). |
 | Anthropic key handling | Hardcoded in source (same file) | Same secrets file for parity. |
 | Missing client tables | Halt and surface the list | Before any wipe, the tool reads the base schema. If any target client lacks a table, abort with a message: "These clients have no table: [...]. Create them in Airtable then rerun." Zero writes happen until every target table exists. |
@@ -229,7 +229,7 @@ order, checkpoint roundtrip.
 **Commit:** `feat: slack ai summaries + write to airtable`
 
 - `components/CostPreview.jsx` + `components/RunPanel.jsx` lifted from
-  `slack-backfill/App.jsx`. Concurrency raised from 8 to 32. Default
+  `slack-backfill/App.jsx`. Concurrency raised from 8 to 16. Default
   model Haiku 4.5.
 - Cost preview shows: total day buckets, eligible (within 30-day
   cutoff), estimated input tokens, dollar estimates for Haiku 4.5 and
@@ -272,7 +272,7 @@ preflight halts the flow if tables are missing.
 | Review UI | `src/components/ReviewPanel.jsx` | Wrap, don't fork |
 | AI classification (Sybill) | `src/lib/ai.js` | Pass Anthropic key from secrets, not settings |
 | Parse slackdump | `slack-backfill/lib/slackParser.js` | No changes |
-| Claude API client | `slack-backfill/lib/claude.js` | Concurrency knob raised |
+| Claude API client | `slack-backfill/lib/claude.js` | Concurrency knob raised to 16 |
 | Format thread block | `slack-backfill/lib/slackParser.js` | No changes |
 | XLSX builder | `slack-backfill/lib/xlsxBuilder.js` | **Not reused** — Airtable replaces XLSX |
 | FileDropZone | `src/components/FileDropZone.jsx` | Reuse for Sybill panel |
