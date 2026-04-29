@@ -38,6 +38,14 @@ npm run dev
 
 Open http://localhost:5173.
 
+## Companion tool: Slack Backfill
+
+A second browser-only tool lives at [`slack-backfill/`](slack-backfill/) and is
+served at `/slack-backfill/` once deployed. It ingests a slackdump v3+ ZIP,
+generates Claude AI summaries of daily Slack channel activity, and appends rows
+to an existing client engagement log XLSX. The Anthropic API key is held in
+memory only — never written to localStorage.
+
 ## Deployment
 
 GitHub Actions publishes the production build to GitHub Pages on push to `main`.
