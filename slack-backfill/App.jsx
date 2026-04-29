@@ -5,7 +5,6 @@ import {
   formatThreadBlock,
   buildPrompt,
 } from './lib/slackParser';
-import { matchClient } from './lib/aliasMap';
 import {
   MODELS,
   DEFAULT_MODEL,
@@ -132,14 +131,15 @@ export default function App() {
           : await parseSlackdumpFolder(folderFiles);
       setParsed(result);
 
-      // Build assignments
+      // Build assignments. Channel-to-sheet mapping is set by the user in
+      // the channel matches step; nothing is auto-matched here.
       const list = [];
       for (const ch of result.channels) {
-        const clientName = matchClient(ch.name);
         for (const bucket of ch.dayBuckets) {
           list.push({
             channelName: ch.name,
-            clientName,
+            channelFolder: ch.folderPath.split('/').pop(),
+            clientName: null,
             date: bucket.date,
             bucket,
           });
@@ -513,22 +513,15 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {parsed.channels.map((ch) => {
-                    const match = matchClient(ch.name);
-                    return (
-                      <tr key={ch.folderPath} className="border-t border-bm-border">
-                        <td className="px-3 py-2 font-mono text-bm-text">#{ch.name}</td>
-                        <td className="px-3 py-2">
-                          {match ? (
-                            <span className="text-bm-accent">{match}</span>
-                          ) : (
-                            <span className="text-bm-muted">Unmatched</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right text-bm-muted">{ch.dayBuckets.length}</td>
-                      </tr>
-                    );
-                  })}
+                  {parsed.channels.map((ch) => (
+                    <tr key={ch.folderPath} className="border-t border-bm-border">
+                      <td className="px-3 py-2 font-mono text-bm-text">#{ch.name}</td>
+                      <td className="px-3 py-2">
+                        <span className="text-bm-muted">Unmatched</span>
+                      </td>
+                      <td className="px-3 py-2 text-right text-bm-muted">{ch.dayBuckets.length}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

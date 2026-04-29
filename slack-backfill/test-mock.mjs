@@ -2,7 +2,7 @@
 // Run with: node slack-backfill/test-mock.mjs
 //
 // Validates: ZIP unpacking, user-mention resolution, day bucketing,
-// thread reply attachment, alias matching, and the no-users.json case.
+// thread reply attachment, and the no-users.json case.
 
 import JSZip from 'jszip';
 import {
@@ -11,7 +11,6 @@ import {
   formatThreadBlock,
   buildPrompt,
 } from './lib/slackParser.js';
-import { matchClient } from './lib/aliasMap.js';
 
 // Mock browser File-with-webkitRelativePath for the folder-mode test.
 class MockFile {
@@ -121,13 +120,6 @@ async function main() {
   assert(result.userMap.get('U001') === 'Kareem T', 'U001 harvested into userMap');
   assert(result.userMap.get('U002') === 'Jane Client', 'U002 harvested into userMap');
 
-  // Alias match
-  const matched = matchClient(jencap.name);
-  assert(matched === 'Jencap', `alias matched: ${matched}`);
-
-  const random = result.channels.find((c) => c.name === 'random-internal');
-  assert(matchClient(random.name) === null, 'random-internal unmatched');
-
   const block = formatThreadBlock(bucket);
   assert(block.includes('Kareem T'), 'thread block includes parent');
   assert(block.includes('└'), 'thread block has reply marker');
@@ -135,14 +127,6 @@ async function main() {
   const prompt = buildPrompt(bucket);
   assert(prompt.includes('#bm-x-jencap-2024'), 'prompt has channel');
   assert(prompt.includes('2024-04-28'), 'prompt has date');
-
-  assert(matchClient('client-bsr-2024') === 'Blu Sky', 'bsr maps to Blu Sky');
-  assert(matchClient('tel-team') === 'The Estate Lawyers', 'tel maps to Estate Lawyers');
-  assert(
-    matchClient('estate-lawyers-misc') === 'The Estate Lawyers',
-    'estate lawyers full match',
-  );
-  assert(matchClient('telly-channel') === null, 'tel only matches whole word');
 
   // ─── Folder-mode parser, no users.json ────────────────────────────
   const channelsJson = JSON.stringify([{ id: 'C100', name: 'bm-x-jencap-2024' }]);
