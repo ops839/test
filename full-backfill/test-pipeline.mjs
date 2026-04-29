@@ -482,15 +482,19 @@ const mockBucket = (text) => ({
   ];
   const summaries = {
     0: { summary: 'Alice greeted in Athena channel.' },
-    // 1: ineligible — no summary
+    // 1: ineligible — no summary entry; row is still included with blank Summary
     2: { summary: 'Bob approved changes in Bushel.' },
   };
   const rows = buildSlackRows(slackAssignments, summaries);
-  assert(rows.length === 2, `buildSlackRows produces 2 rows (got ${rows.length})`);
-  assert(rows[0].targetClient === 'Athena', 'first Slack row targets Athena');
-  assert(rows[1].targetClient === 'Bushel', 'second Slack row targets Bushel');
+  // All 3 assignments have a targetClient: eligible rows get AI summary,
+  // ineligible row gets a blank Summary but still produces a row.
+  assert(rows.length === 3, `buildSlackRows produces 3 rows (got ${rows.length})`);
+  assert(rows[0].targetClient === 'Athena', 'first Slack row targets Athena (eligible)');
+  assert(rows[0].fields['Summary'] === 'Alice greeted in Athena channel.', 'eligible row has AI summary');
+  assert(rows[1].targetClient === 'Athena', 'second Slack row targets Athena (ineligible)');
+  assert(rows[1].fields['Summary'] === '', 'ineligible row has blank Summary');
+  assert(rows[2].targetClient === 'Bushel', 'third Slack row targets Bushel');
   assert(rows[0].fields['Type of Engagement'] === 'Slack messages', 'Slack row type correct');
-  assert(rows[0].fields['Summary'] === 'Alice greeted in Athena channel.', 'summary text set');
   assert(typeof rows[0].fields['Slack Message'] === 'string' && rows[0].fields['Slack Message'].includes('alice'), 'Slack Message contains formatted thread');
   assert(rows[0].fields['Meeting Name'] === '', 'Slack row has empty Meeting Name');
 }
@@ -539,7 +543,7 @@ console.log('\nfull pipeline smoke test:');
   const slackSummariesFixture = {
     0: { summary: 'Athena Slack summary.' },
     1: { summary: 'Bushel Slack summary.' },
-    // 2: ineligible, skipped
+    // 2: ineligible — no summary; still produces a row with blank Summary
   };
 
   // Build rows
@@ -548,8 +552,11 @@ console.log('\nfull pipeline smoke test:');
   const merged = [...sybillRows, ...slackRows];
 
   assert(sybillRows.length === 3, `3 Sybill rows (got ${sybillRows.length})`);
-  assert(slackRows.length === 2, `2 Slack rows (got ${slackRows.length})`);
-  assert(merged.length === 5, `5 merged rows total (got ${merged.length})`);
+  // 3 Slack rows: 2 eligible (with AI summary) + 1 ineligible (blank Summary)
+  assert(slackRows.length === 3, `3 Slack rows (got ${slackRows.length})`);
+  assert(merged.length === 6, `6 merged rows total (got ${merged.length})`);
+  const ineligibleRow = slackRows.find((r) => r.fields['Summary'] === '');
+  assert(ineligibleRow !== undefined, 'ineligible Slack bucket produces row with blank Summary');
 
   // Group by client (mirrors AirtableWritePanel logic)
   const byClient = new Map();
@@ -558,7 +565,8 @@ console.log('\nfull pipeline smoke test:');
     if (!byClient.has(r.targetClient)) byClient.set(r.targetClient, []);
     byClient.get(r.targetClient).push(r);
   }
-  assert(byClient.get('Athena').length === 3, `Athena gets 3 rows (2 Sybill + 1 Slack), got ${byClient.get('Athena').length}`);
+  // Athena: 2 Sybill + 1 eligible Slack + 1 ineligible Slack = 4
+  assert(byClient.get('Athena').length === 4, `Athena gets 4 rows (2 Sybill + 2 Slack), got ${byClient.get('Athena').length}`);
   assert(byClient.get('Bushel').length === 2, `Bushel gets 2 rows (1 Sybill + 1 Slack), got ${byClient.get('Bushel').length}`);
 
   // Mock Airtable write for each client
@@ -586,7 +594,7 @@ console.log('\nfull pipeline smoke test:');
     await insertRecords('appTest', client, clientRows.map((r) => r.fields), 'patFake');
   }
 
-  assert(insertLog['Athena'] === 3, `Athena table received 3 inserts (got ${insertLog['Athena']})`);
+  assert(insertLog['Athena'] === 4, `Athena table received 4 inserts (got ${insertLog['Athena']})`);
   assert(insertLog['Bushel'] === 2, `Bushel table received 2 inserts (got ${insertLog['Bushel']})`);
 
   setFetchOverride(null);

@@ -19,8 +19,10 @@ export function buildSlackRows(slackAssignments, slackSummaries) {
   const result = [];
   for (let i = 0; i < slackAssignments.length; i++) {
     const a = slackAssignments[i];
+    if (!a.targetClient || !a.bucket) continue;
     const s = slackSummaries[i];
-    if (!a.targetClient || !a.eligible || !a.bucket || !s?.summary) continue;
+    // Eligible buckets with an AI error are skipped (user chose "continue with partial").
+    if (a.eligible && s?.error) continue;
     result.push({
       targetClient: a.targetClient,
       fields: {
@@ -28,7 +30,7 @@ export function buildSlackRows(slackAssignments, slackSummaries) {
         'Type of Engagement': 'Slack messages',
         'Meeting Name': '',
         'Attendees': '',
-        'Summary': s.summary,
+        'Summary': (a.eligible && s?.summary) ? s.summary : '',
         'Action Items': '',
         'Slack Message': formatThreadBlock(a.bucket),
       },
