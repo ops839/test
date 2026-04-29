@@ -5,6 +5,7 @@ import SybillSourcePanel from './components/SybillSourcePanel.jsx';
 import SlackSourcePanel from './components/SlackSourcePanel.jsx';
 import SybillReview from './components/SybillReview.jsx';
 import ChannelMatchPanel from './components/ChannelMatchPanel.jsx';
+import AirtableWritePanel from './components/AirtableWritePanel.jsx';
 
 // Build final Airtable-ready rows from auto-classified and review-confirmed meetings.
 function buildSybillRows(autoAssigned, reviewAssigned) {
@@ -155,21 +156,27 @@ export default function App() {
             </section>
           )}
 
-          {/* Step 3: both branches done — merge point */}
+          {/* Step 3: both branches done — merge point + Airtable write */}
           {bothReady && (
-            <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-2">
-              <h2 className="text-base font-semibold text-bm-text">
-                <span className="text-bm-accent mr-2">3.</span>Both sources ready
-              </h2>
-              <p className="text-xs text-bm-muted">
-                {sybillRows.length} Sybill row{sybillRows.length !== 1 ? 's' : ''}
-                {' · '}
-                {eligibleAssignments.length} eligible Slack bucket{eligibleAssignments.length !== 1 ? 's' : ''}
-              </p>
-              <p className="text-xs text-bm-muted">
-                AI summarization and Airtable write coming in the next phases.
-              </p>
-            </section>
+            <>
+              <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-1">
+                <h2 className="text-base font-semibold text-bm-text">
+                  <span className="text-bm-accent mr-2">3.</span>Both sources ready
+                </h2>
+                <p className="text-xs text-bm-muted">
+                  {sybillRows.length} Sybill row{sybillRows.length !== 1 ? 's' : ''}
+                  {' · '}
+                  {eligibleAssignments.length} eligible Slack bucket
+                  {eligibleAssignments.length !== 1 ? 's' : ''}
+                </p>
+                <p className="text-xs text-bm-muted">
+                  AI summarization wiring lands in the next phase. Phase 5 writes
+                  Sybill rows now; Slack rows join in Phase 6.
+                </p>
+              </section>
+
+              <AirtableWritePanel rows={sybillRows} />
+            </>
           )}
 
         </div>

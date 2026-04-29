@@ -1,8 +1,31 @@
-// Smoke tests for Phases 2 & 4: cutoff filtering and export fingerprint.
-// Run with: node full-backfill/test-pipeline.mjs
+// Smoke tests for Phases 2, 4, 5: cutoffs, fingerprint, airtable client,
+// checkpoint roundtrip. Run with: node full-backfill/test-pipeline.mjs
+
+// localStorage polyfill for Node — checkpoint.js targets the browser.
+if (typeof globalThis.localStorage === 'undefined') {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { store.set(k, String(v)); },
+    removeItem: (k) => { store.delete(k); },
+    clear: () => { store.clear(); },
+  };
+}
 
 import { SYBILL_CUTOFF_DAYS, SLACK_CUTOFF_DAYS, cutoffDateStr } from './lib/cutoffs.js';
 import { computeExportFingerprint } from './lib/exportFingerprint.js';
+import {
+  TokenBucket,
+  findMissingTables,
+  findMissingColumns,
+  REQUIRED_COLUMNS,
+  wipeTable,
+  insertRecords,
+  getBaseSchema,
+  setBucketOverride,
+  setFetchOverride,
+} from './lib/airtable.js';
+import { saveCheckpoint, loadCheckpoint, clearCheckpoint } from './lib/checkpoint.js';
 
 let passed = 0;
 let failed = 0;
@@ -208,6 +231,203 @@ function makeChannels(folderNames) {
   // Simulate hydrating idA — should restore its choices
   const choicesForA = cache[idA] ?? {};
   assert(choicesForA['alpha'] === 'Athena', 'same fingerprint restores cached choices');
+}
+
+// ─── airtable: TokenBucket rate limit ───────────────────────────────────────
+
+console.log('\nairtable TokenBucket:');
+
+{
+  // 10 tokens/sec, burst capacity 5: first 5 free, next 5 take ~0.5s.
+  const tb = new TokenBucket(10, 5);
+  const start = Date.now();
+  for (let i = 0; i < 10; i++) await tb.take();
+  const elapsed = Date.now() - start;
+  assert(elapsed >= 400,
+    `10 takes at rate=10 capacity=5 → at least ~0.5s (got ${elapsed}ms)`);
+  assert(elapsed < 1500, `not absurdly slow (got ${elapsed}ms)`);
+}
+
+{
+  // Burst within capacity should be near-instant.
+  const tb = new TokenBucket(5, 5);
+  const start = Date.now();
+  for (let i = 0; i < 5; i++) await tb.take();
+  const elapsed = Date.now() - start;
+  assert(elapsed < 100, `5 takes within burst capacity is instant (got ${elapsed}ms)`);
+}
+
+// ─── airtable: halt-on-missing-table ────────────────────────────────────────
+
+console.log('\nairtable preflight (pure):');
+
+{
+  const schema = [
+    { id: 't1', name: 'Athena', fields: [] },
+    { id: 't2', name: 'Bushel', fields: [] },
+  ];
+  const targets = ['Athena', 'Bushel', 'NewClient', 'AnotherNew'];
+  const missing = findMissingTables(schema, targets);
+  assert(missing.length === 2, `2 of 4 targets missing (got ${missing.length})`);
+  assert(missing.includes('NewClient') && missing.includes('AnotherNew'),
+    'both new targets surfaced');
+}
+
+{
+  const allPresent = findMissingTables([{ id: 'x', name: 'A', fields: [] }], ['A']);
+  assert(allPresent.length === 0, 'no missing when all present');
+}
+
+{
+  // Column check: spec requires exact v2 schema column names.
+  const fullTable = {
+    name: 'Athena',
+    fields: REQUIRED_COLUMNS.map((name) => ({ id: name, name, type: 'singleLineText' })),
+  };
+  assert(findMissingColumns(fullTable, REQUIRED_COLUMNS).length === 0,
+    'fully-specced table has no missing columns');
+
+  const partialTable = {
+    name: 'Athena',
+    fields: [
+      { id: 'f1', name: 'Engagement Date', type: 'date' },
+      { id: 'f2', name: 'Meeting Name', type: 'singleLineText' },
+    ],
+  };
+  const missingCols = findMissingColumns(partialTable, REQUIRED_COLUMNS);
+  assert(missingCols.length === REQUIRED_COLUMNS.length - 2,
+    `partial table missing ${REQUIRED_COLUMNS.length - 2} columns (got ${missingCols.length})`);
+  assert(missingCols.includes('Summary') && missingCols.includes('Action Items'),
+    'specific missing columns surface correctly');
+}
+
+// ─── airtable: wipe-then-insert order via mocked fetch ──────────────────────
+
+console.log('\nairtable wipe-then-insert order:');
+
+{
+  // Use a fast bucket so the test isn't slowed by rate limit.
+  setBucketOverride(new TokenBucket(1000, 1000));
+
+  const fetchLog = [];
+  setFetchOverride(async (url, options) => {
+    const method = options?.method ?? 'GET';
+    const u = url.toString();
+    fetchLog.push({ method, url: u });
+
+    if (method === 'GET' && u.includes('/meta/bases/')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ tables: [{ id: 't1', name: 'Athena', fields: [] }] }),
+        text: async () => '',
+      };
+    }
+    if (method === 'GET') {
+      // List records — return one page with two records, no offset.
+      return {
+        ok: true, status: 200,
+        json: async () => ({ records: [{ id: 'rec1' }, { id: 'rec2' }] }),
+        text: async () => '',
+      };
+    }
+    if (method === 'DELETE') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ records: [{ id: 'rec1', deleted: true }] }),
+        text: async () => '',
+      };
+    }
+    if (method === 'POST') {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ records: [{ id: 'recNew' }] }),
+        text: async () => '',
+      };
+    }
+    return { ok: false, status: 500, json: async () => ({}), text: async () => 'unhandled' };
+  });
+
+  // Verify schema fetch
+  const schema = await getBaseSchema('appBase', 'patFake');
+  assert(schema.length === 1 && schema[0].name === 'Athena',
+    'getBaseSchema returns parsed tables');
+
+  // Run wipe then insert against the same table
+  const wiped = await wipeTable('appBase', 'Athena', 'patFake');
+  const inserted = await insertRecords('appBase', 'Athena', [{ x: 1 }, { x: 2 }], 'patFake');
+
+  assert(wiped === 2, `wipeTable deleted 2 records (got ${wiped})`);
+  assert(inserted === 2, `insertRecords inserted 2 records (got ${inserted})`);
+
+  // Check call sequence: schema(GET) → list(GET) → DELETE → POST
+  const tail = fetchLog.slice(-3).map((c) => c.method);
+  assert(tail[0] === 'GET' || tail[0] === 'DELETE',
+    'wipe lists records before deleting');
+  const deleteIdx = fetchLog.findIndex((c) => c.method === 'DELETE');
+  const postIdx = fetchLog.findIndex((c) => c.method === 'POST');
+  assert(deleteIdx >= 0 && postIdx >= 0 && deleteIdx < postIdx,
+    `DELETE happens before POST (delete at ${deleteIdx}, post at ${postIdx})`);
+
+  // Verify URL shape — searchParams encodes [] as %5B%5D, so just check the ids.
+  const deleteCall = fetchLog.find((c) => c.method === 'DELETE');
+  assert(deleteCall.url.includes('rec1') && deleteCall.url.includes('rec2'),
+    'DELETE URL contains record ids');
+
+  setFetchOverride(null);
+  setBucketOverride(null);
+}
+
+// ─── airtable: batching at 10 per request ───────────────────────────────────
+
+console.log('\nairtable batching:');
+
+{
+  setBucketOverride(new TokenBucket(1000, 1000));
+  let postCount = 0;
+  setFetchOverride(async (_url, options) => {
+    if (options?.method === 'POST') postCount += 1;
+    return { ok: true, status: 200, json: async () => ({ records: [] }), text: async () => '' };
+  });
+
+  const rows = Array.from({ length: 25 }, (_, i) => ({ name: `r${i}` }));
+  await insertRecords('appBase', 'T', rows, 'patFake');
+  assert(postCount === 3, `25 rows → 3 POSTs (10+10+5), got ${postCount}`);
+
+  setFetchOverride(null);
+  setBucketOverride(null);
+}
+
+// ─── checkpoint roundtrip ───────────────────────────────────────────────────
+
+console.log('\ncheckpoint:');
+
+{
+  clearCheckpoint();
+  assert(loadCheckpoint() === null, 'load returns null when nothing saved');
+}
+
+{
+  const state = {
+    rows: [{ targetClient: 'Athena', fields: { 'Meeting Name': 'kickoff' } }],
+    slackAssignments: [{ targetClient: 'Athena', channelName: 'general', date: '2026-04-29' }],
+  };
+  saveCheckpoint(state);
+  const loaded = loadCheckpoint();
+  assert(loaded !== null, 'loadCheckpoint returns saved state');
+  assert(loaded.rows.length === 1, 'rows survive roundtrip');
+  assert(loaded.rows[0].targetClient === 'Athena', 'nested fields survive roundtrip');
+  assert(loaded.slackAssignments[0].date === '2026-04-29', 'second key survives roundtrip');
+  clearCheckpoint();
+  assert(loadCheckpoint() === null, 'clearCheckpoint removes the entry');
+}
+
+{
+  // TTL: a checkpoint older than 7 days should be ignored.
+  const stale = { savedAt: Date.now() - (8 * 24 * 60 * 60 * 1000), state: { x: 1 } };
+  globalThis.localStorage.setItem('full-backfill:checkpoint-v1', JSON.stringify(stale));
+  assert(loadCheckpoint() === null, 'stale checkpoint (>7d) is dropped on read');
+  assert(globalThis.localStorage.getItem('full-backfill:checkpoint-v1') === null,
+    'stale checkpoint is removed from storage');
 }
 
 // ─── summary ────────────────────────────────────────────────────────────────
