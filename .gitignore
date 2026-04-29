@@ -14,9 +14,6 @@ dist-ssr
 .env
 .netlify
 
-# Hardcoded credentials for /full-backfill/ — see secrets.template.js
-full-backfill/lib/secrets.js
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

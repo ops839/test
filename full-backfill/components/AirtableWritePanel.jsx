@@ -11,10 +11,8 @@ import { saveCheckpoint, clearCheckpoint } from '../lib/checkpoint.js';
 import { AIRTABLE_BASE_ID, AIRTABLE_PAT } from '../lib/secrets.js';
 
 const SECRETS_VALID =
-  typeof AIRTABLE_PAT === 'string' &&
-  !AIRTABLE_PAT.endsWith('...') &&
-  typeof AIRTABLE_BASE_ID === 'string' &&
-  !AIRTABLE_BASE_ID.endsWith('...');
+  typeof AIRTABLE_PAT === 'string' && AIRTABLE_PAT.startsWith('pat') &&
+  typeof AIRTABLE_BASE_ID === 'string' && AIRTABLE_BASE_ID.startsWith('app');
 
 // Phases:
 //   needs-secrets  → secrets.js still holds placeholders
