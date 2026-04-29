@@ -1,4 +1,15 @@
-# Sybill Meeting Processor
+# Blu Mountain RevOps Tools
+
+This repo hosts two browser-only tools:
+
+- **/** — **Sybill Meeting Processor**: parses Sybill meeting summaries from Slack export JSON, classifies internal vs external meetings, uploads external meetings to Google Sheets.
+- **/slack-backfill/** — **Slack Backfill**: ingests a slackdump v3+ ZIP, generates Claude AI summaries of daily Slack channel activity, and appends rows to an existing client engagement log XLSX. Run `npm run dev` and open `/slack-backfill/`.
+
+The Slack Backfill tool is one-shot, runs entirely in-browser, and never persists the Anthropic API key to localStorage. See `slack-backfill/` for source.
+
+---
+
+## Sybill Meeting Processor
 
 A client-side React app that parses Sybill meeting summaries from Slack export JSON files, classifies meetings as internal or external, and uploads external meetings to Google Sheets — one tab per client.
 
