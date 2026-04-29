@@ -25,6 +25,17 @@ import {
 const RESUME_KEY = 'slack-backfill:resume-v1';
 const RESUME_INTERVAL = 50;
 
+// Only day-buckets within this many days of "now" are sent to Claude.
+// Older buckets show in the channel-matches table but aren't summarized
+// or written to the output XLSX.
+const CUTOFF_DAYS = 21;
+
+function cutoffDateStr() {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - CUTOFF_DAYS);
+  return d.toISOString().slice(0, 10);
+}
+
 // Dropdown sentinels. Empty string means "user has not picked anything yet".
 const PICK_UNSET = '';
 const PICK_UNMATCHED = '__UNMATCHED__';
@@ -189,22 +200,33 @@ export default function App() {
     }
   }
 
+  // Indices into `assignments` whose date is within the summarization
+  // cutoff. Only these get Claude calls and only their summaries land in
+  // the output XLSX. Older buckets are visible upstream but skipped here.
+  const eligibleIndices = useMemo(() => {
+    const cutoff = cutoffDateStr();
+    const out = [];
+    for (let i = 0; i < assignments.length; i++) {
+      if (assignments[i].date >= cutoff) out.push(i);
+    }
+    return out;
+  }, [assignments]);
+
   // ─── Cost preview numbers ──────────────────────────────────────────
   const costStats = useMemo(() => {
     if (!parsed) return null;
     const channelCount = parsed.channels.length;
-    const bucketCount = assignments.length;
-    const matchedCount = assignments.filter((a) => a.clientName).length;
-    const unmatchedCount = bucketCount - matchedCount;
+    const totalBuckets = assignments.length;
+    const toSummarize = eligibleIndices.length;
 
-    // Estimate input tokens by summing prompt sizes
+    // Estimate input tokens by summing prompt sizes for eligible buckets only.
     let inputTokens = 0;
-    for (const a of assignments) {
-      const promptStr = buildPrompt(a.bucket);
+    for (const idx of eligibleIndices) {
+      const promptStr = buildPrompt(assignments[idx].bucket);
       inputTokens += estimateTokens(promptStr) + estimateTokens(SYSTEM_PROMPT);
     }
-    // Assume ~120 output tokens per call
-    const outputTokens = bucketCount * 120;
+    // Assume ~120 output tokens per call.
+    const outputTokens = toSummarize * 120;
 
     const costs = {};
     for (const id of Object.keys(MODELS)) {
@@ -212,15 +234,15 @@ export default function App() {
     }
     return {
       channelCount,
-      bucketCount,
-      matchedCount,
-      unmatchedCount,
+      totalBuckets,
+      toSummarize,
       messageCount: parsed.totalMessages,
       inputTokens,
       outputTokens,
       costs,
+      cutoffDate: cutoffDateStr(),
     };
-  }, [parsed, assignments]);
+  }, [parsed, assignments, eligibleIndices]);
 
   // ─── API key validation ────────────────────────────────────────────
   async function handleValidateKey() {
@@ -307,8 +329,7 @@ export default function App() {
     setResults({});
     setDoneCount(0);
     setUsage({ inputTokens: 0, outputTokens: 0 });
-    const indices = assignments.map((_, i) => i);
-    await runSummaries(indices);
+    await runSummaries(eligibleIndices);
   }
 
   async function handleRetryFailed() {
@@ -383,8 +404,10 @@ export default function App() {
   // ─── Per-channel progress ──────────────────────────────────────────
   const channelProgress = useMemo(() => {
     if (!parsed) return [];
+    const eligibleSet = new Set(eligibleIndices);
     const map = new Map();
     for (let i = 0; i < assignments.length; i++) {
+      if (!eligibleSet.has(i)) continue;
       const a = assignments[i];
       if (!map.has(a.channelName)) {
         const choice = channelChoices[a.channelFolder] ?? PICK_UNSET;
@@ -407,7 +430,7 @@ export default function App() {
       }
     }
     return [...map.values()];
-  }, [parsed, assignments, results, channelChoices]);
+  }, [parsed, assignments, results, channelChoices, eligibleIndices]);
 
   const failedCount = useMemo(
     () => Object.values(results).filter((r) => r.error).length,
@@ -421,8 +444,8 @@ export default function App() {
 
   const allDone =
     parsed &&
-    assignments.length > 0 &&
-    doneCount >= assignments.length &&
+    eligibleIndices.length > 0 &&
+    doneCount >= eligibleIndices.length &&
     !running;
 
   // ─── Render ─────────────────────────────────────────────────────────
@@ -618,10 +641,16 @@ export default function App() {
 
         {parsed && costStats && (
           <Panel step={4} title="Cost preview">
+            <p className="text-xs text-bm-muted">
+              Summarization is capped to the last {CUTOFF_DAYS} days
+              (since {costStats.cutoffDate}). Older day-buckets are loaded
+              into the channel matches view but not summarized or written
+              to the output.
+            </p>
             <div className="grid grid-cols-4 gap-4">
               <Stat label="Channels" value={costStats.channelCount} />
-              <Stat label="Day buckets" value={costStats.bucketCount} />
-              <Stat label="Messages" value={costStats.messageCount} />
+              <Stat label="Total day buckets" value={costStats.totalBuckets.toLocaleString()} />
+              <Stat label="To summarize" value={costStats.toSummarize.toLocaleString()} />
               <Stat label="Est. input tokens" value={costStats.inputTokens.toLocaleString()} />
             </div>
             <div className="space-y-2 pt-2">
@@ -737,14 +766,14 @@ export default function App() {
             <div className="grid grid-cols-4 gap-4">
               <Stat
                 label="Progress"
-                value={`${doneCount} / ${assignments.length}`}
+                value={`${doneCount} / ${eligibleIndices.length}`}
               />
               <Stat
                 label="Overall"
                 value={
-                  assignments.length === 0
+                  eligibleIndices.length === 0
                     ? '0%'
-                    : `${Math.round((doneCount / assignments.length) * 100)}%`
+                    : `${Math.round((doneCount / eligibleIndices.length) * 100)}%`
                 }
               />
               <Stat label="Failed" value={failedCount} />
