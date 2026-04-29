@@ -46,6 +46,15 @@ generates Claude AI summaries of daily Slack channel activity, and appends rows
 to an existing client engagement log XLSX. The Anthropic API key is held in
 memory only, never written to localStorage.
 
+## Companion tool: Full Backfill
+
+A third browser-only tool lives at [`full-backfill/`](full-backfill/) and is
+served at `/full-backfill/` once deployed. It merges the Sybill JSON and
+slackdump flows into a single run, classifies and summarizes both sources, and
+writes the result directly into Airtable (one table per client, hard wipe and
+rewrite). See [`full-backfill/SPEC.md`](full-backfill/SPEC.md) for the full
+contract.
+
 ## Deployment
 
 GitHub Actions publishes the production build to GitHub Pages on push to `main`.

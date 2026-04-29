@@ -11,6 +11,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         slackBackfill: resolve(__dirname, 'slack-backfill/index.html'),
+        fullBackfill: resolve(__dirname, 'full-backfill/index.html'),
       },
     },
   },
