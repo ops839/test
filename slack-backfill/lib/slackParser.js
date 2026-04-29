@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 
-// Parse a slackdump v3+ ZIP into a flat list of day-buckets.
+// Parse a slackdump v3+ export (from a ZIP file or a directly selected folder)
+// into a flat list of day-buckets.
 //
 // Returns:
 //   {
@@ -106,28 +107,68 @@ function buildMessageRecord(msg, userMap, channelId, workspaceUrl) {
   };
 }
 
+// ─── Source abstractions ───────────────────────────────────────────
+//
+// A Source exposes:
+//   listJsonPaths(): string[]   — relative paths of all .json files
+//   readJson(path): Promise<any> — parsed JSON for that path
+
+class ZipSource {
+  constructor(zip) {
+    this.zip = zip;
+    this.paths = [];
+    zip.forEach((relativePath, entry) => {
+      if (entry.dir) return;
+      if (!relativePath.endsWith('.json')) return;
+      this.paths.push(relativePath);
+    });
+  }
+  listJsonPaths() {
+    return this.paths;
+  }
+  async readJson(path) {
+    const entry = this.zip.file(path);
+    if (!entry) throw new Error(`Path not found in ZIP: ${path}`);
+    return JSON.parse(await entry.async('string'));
+  }
+}
+
+class FolderSource {
+  constructor(fileList) {
+    this.fileMap = new Map();
+    for (const file of fileList) {
+      const path = file.webkitRelativePath || file.name;
+      if (!path.endsWith('.json')) continue;
+      this.fileMap.set(path, file);
+    }
+  }
+  listJsonPaths() {
+    return [...this.fileMap.keys()];
+  }
+  async readJson(path) {
+    const file = this.fileMap.get(path);
+    if (!file) throw new Error(`Path not found in folder: ${path}`);
+    return JSON.parse(await file.text());
+  }
+}
+
 // Slackdump v3+ writes each channel as a folder with daily JSON files
 // named YYYY-MM-DD.json. Threads can be inline (parent.replies array of
 // full message objects) or in a sibling threads/ folder. We look for both.
-async function readChannelMessages(zip, channelFolder, userMap, channelId, workspaceUrl) {
+async function readChannelMessages(source, channelFolder, userMap, channelId, workspaceUrl) {
   const allMessages = [];
   const threadsByParentTs = new Map();
 
-  const fileEntries = [];
-  zip.forEach((relativePath, entry) => {
-    if (entry.dir) return;
-    if (!relativePath.startsWith(channelFolder + '/')) return;
-    if (!relativePath.endsWith('.json')) return;
-    fileEntries.push({ relativePath, entry });
-  });
+  const filePaths = source
+    .listJsonPaths()
+    .filter((p) => p.startsWith(channelFolder + '/'));
 
-  for (const { relativePath, entry } of fileEntries) {
+  for (const relativePath of filePaths) {
     const fileName = relativePath.slice(channelFolder.length + 1);
     const isThreadFile = fileName.startsWith('threads/') || fileName.includes('/threads/');
-    const text = await entry.async('string');
     let payload;
     try {
-      payload = JSON.parse(text);
+      payload = await source.readJson(relativePath);
     } catch {
       continue;
     }
@@ -199,35 +240,36 @@ function groupByDay(messages, channelName) {
   return [...buckets.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
-export async function parseSlackdumpZip(file) {
-  const zip = await JSZip.loadAsync(file);
+async function parseFromSource(source) {
+  const allPaths = source.listJsonPaths();
 
   // Locate users.json and channels.json (may be nested under a top folder)
-  let usersFile = null;
-  let channelsFile = null;
+  let usersPath = null;
+  let channelsPath = null;
   let rootPrefix = '';
 
-  zip.forEach((relativePath, entry) => {
-    if (entry.dir) return;
-    const base = relativePath.split('/').pop();
-    if (base === 'users.json' && (!usersFile || relativePath.length < usersFile.name.length)) {
-      usersFile = entry;
-      rootPrefix = relativePath.slice(0, relativePath.length - 'users.json'.length);
+  for (const path of allPaths) {
+    const base = path.split('/').pop();
+    if (base === 'users.json' && (!usersPath || path.length < usersPath.length)) {
+      usersPath = path;
+      rootPrefix = path.slice(0, path.length - 'users.json'.length);
     }
-    if (base === 'channels.json' && !channelsFile) {
-      channelsFile = entry;
+    if (base === 'channels.json' && !channelsPath) {
+      channelsPath = path;
     }
-  });
+  }
 
-  if (!usersFile) throw new Error('users.json not found in ZIP — is this a slackdump export?');
+  if (!usersPath) {
+    throw new Error('users.json not found — is this a slackdump export?');
+  }
 
-  const usersJson = JSON.parse(await usersFile.async('string'));
+  const usersJson = await source.readJson(usersPath);
   const userMap = buildUserMap(usersJson);
 
   let channelsJson = [];
-  if (channelsFile) {
+  if (channelsPath) {
     try {
-      channelsJson = JSON.parse(await channelsFile.async('string'));
+      channelsJson = await source.readJson(channelsPath);
     } catch {
       channelsJson = [];
     }
@@ -237,22 +279,22 @@ export async function parseSlackdumpZip(file) {
     if (c.name) channelMetaByName.set(c.name, c);
   }
 
-  // Discover channel folders: any direct folder under rootPrefix that contains a YYYY-MM-DD.json
+  // Discover channel folders: any direct folder under rootPrefix that
+  // contains a YYYY-MM-DD.json file. Files at the root level (no parent
+  // folder beneath rootPrefix) are skipped — we need a folder name to use
+  // as the channel name.
   const channelFolders = new Set();
-  zip.forEach((relativePath, entry) => {
-    if (entry.dir) return;
-    if (!relativePath.startsWith(rootPrefix)) return;
-    const rel = relativePath.slice(rootPrefix.length);
+  for (const path of allPaths) {
+    if (!path.startsWith(rootPrefix)) continue;
+    const rel = path.slice(rootPrefix.length);
     const parts = rel.split('/');
-    if (parts.length < 2) return;
+    if (parts.length < 2) continue;
     const fileName = parts[parts.length - 1];
-    if (!/^\d{4}-\d{2}-\d{2}\.json$/.test(fileName)) return;
-    // The first segment is the channel folder (folders may be nested if it's an archive)
+    if (!/^\d{4}-\d{2}-\d{2}\.json$/.test(fileName)) continue;
     const folderPath = rootPrefix + parts[0];
     channelFolders.add(folderPath);
-  });
+  }
 
-  // Try to detect workspace url from channels.json (slackdump stores it sometimes)
   const workspaceUrl = null;
 
   const channels = [];
@@ -264,7 +306,7 @@ export async function parseSlackdumpZip(file) {
     const channelId = channelMeta?.id || null;
     const channelName = channelMeta?.name || folderName;
 
-    const messages = await readChannelMessages(zip, folderPath, userMap, channelId, workspaceUrl);
+    const messages = await readChannelMessages(source, folderPath, userMap, channelId, workspaceUrl);
     const dayBuckets = groupByDay(messages, channelName);
     const msgCount = messages.reduce((n, m) => n + 1 + m.replies.length, 0);
     totalMessages += msgCount;
@@ -272,6 +314,15 @@ export async function parseSlackdumpZip(file) {
   }
 
   return { channels, totalMessages, userMap };
+}
+
+export async function parseSlackdumpZip(file) {
+  const zip = await JSZip.loadAsync(file);
+  return parseFromSource(new ZipSource(zip));
+}
+
+export async function parseSlackdumpFolder(fileList) {
+  return parseFromSource(new FolderSource(fileList));
 }
 
 // Format a day-bucket's messages into the column-G text block.

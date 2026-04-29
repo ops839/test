@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { parseSlackdumpZip, formatThreadBlock, buildPrompt } from './lib/slackParser';
+import {
+  parseSlackdumpZip,
+  parseSlackdumpFolder,
+  formatThreadBlock,
+  buildPrompt,
+} from './lib/slackParser';
 import { matchClient } from './lib/aliasMap';
 import {
   MODELS,
@@ -44,7 +49,11 @@ function Stat({ label, value }) {
 
 export default function App() {
   // Step state machine
+  // sourceMode: 'zip' | 'folder'  — which input the user picked last
+  const [sourceMode, setSourceMode] = useState('zip');
   const [zipFile, setZipFile] = useState(null);
+  const [folderFiles, setFolderFiles] = useState(null); // FileList from <input webkitdirectory>
+  const [folderLabel, setFolderLabel] = useState('');
   const [xlsxFile, setXlsxFile] = useState(null);
   const [parsed, setParsed] = useState(null); // { channels, totalMessages, userMap }
   const [parseError, setParseError] = useState(null);
@@ -84,13 +93,43 @@ export default function App() {
     }
   }, []);
 
+  function handleZipPicked(file) {
+    if (!file) return;
+    setSourceMode('zip');
+    setZipFile(file);
+    setFolderFiles(null);
+    setFolderLabel('');
+    setParsed(null);
+    setParseError(null);
+  }
+
+  function handleFolderPicked(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    setSourceMode('folder');
+    setFolderFiles(fileList);
+    // Top folder name is the first segment of webkitRelativePath of any file
+    const first = fileList[0];
+    const top = (first.webkitRelativePath || '').split('/')[0] || 'folder';
+    setFolderLabel(`${top} (${fileList.length} files)`);
+    setZipFile(null);
+    setParsed(null);
+    setParseError(null);
+  }
+
+  const sourceReady =
+    (sourceMode === 'zip' && !!zipFile) ||
+    (sourceMode === 'folder' && !!folderFiles);
+
   // ─── Parse ──────────────────────────────────────────────────────────
   async function handleParse() {
-    if (!zipFile) return;
+    if (!sourceReady) return;
     setParsing(true);
     setParseError(null);
     try {
-      const result = await parseSlackdumpZip(zipFile);
+      const result =
+        sourceMode === 'zip'
+          ? await parseSlackdumpZip(zipFile)
+          : await parseSlackdumpFolder(folderFiles);
       setParsed(result);
 
       // Build assignments
@@ -380,24 +419,63 @@ export default function App() {
           </section>
         )}
 
-        <Panel step={1} title="Upload slackdump ZIP">
-          <input
-            type="file"
-            accept=".zip"
-            onChange={(e) => setZipFile(e.target.files?.[0] || null)}
-            className="block w-full text-sm text-bm-muted file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-bm-border file:text-bm-text hover:file:bg-bm-accent-dim hover:file:text-bm-bg"
-          />
-          {zipFile && (
-            <p className="text-sm text-bm-muted">
-              {zipFile.name} ({(zipFile.size / 1024 / 1024).toFixed(2)} MB)
-            </p>
-          )}
+        <Panel step={1} title="Upload slackdump source">
+          <p className="text-xs text-bm-muted">
+            Provide either the slackdump ZIP archive, or the slackdump export
+            folder directly. Loose JSON files are not supported because the
+            channel name is encoded in the parent folder name.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label
+              className={`flex flex-col gap-2 rounded-lg border p-4 cursor-pointer ${
+                sourceMode === 'zip' && zipFile
+                  ? 'border-bm-accent bg-bm-accent/10'
+                  : 'border-bm-border hover:border-bm-accent-dim'
+              }`}
+            >
+              <span className="text-sm font-medium text-bm-text">Upload ZIP</span>
+              <span className="text-xs text-bm-muted">A slackdump v3+ .zip file</span>
+              <input
+                type="file"
+                accept=".zip"
+                onChange={(e) => handleZipPicked(e.target.files?.[0] || null)}
+                className="block w-full text-xs text-bm-muted file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-bm-border file:text-bm-text hover:file:bg-bm-accent-dim hover:file:text-bm-bg"
+              />
+              {sourceMode === 'zip' && zipFile && (
+                <span className="text-xs text-bm-accent break-all">
+                  {zipFile.name} ({(zipFile.size / 1024 / 1024).toFixed(2)} MB)
+                </span>
+              )}
+            </label>
+
+            <label
+              className={`flex flex-col gap-2 rounded-lg border p-4 cursor-pointer ${
+                sourceMode === 'folder' && folderFiles
+                  ? 'border-bm-accent bg-bm-accent/10'
+                  : 'border-bm-border hover:border-bm-accent-dim'
+              }`}
+            >
+              <span className="text-sm font-medium text-bm-text">Select folder</span>
+              <span className="text-xs text-bm-muted">An unzipped slackdump export folder</span>
+              <input
+                type="file"
+                webkitdirectory=""
+                directory=""
+                multiple
+                onChange={(e) => handleFolderPicked(e.target.files)}
+                className="block w-full text-xs text-bm-muted file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-bm-border file:text-bm-text hover:file:bg-bm-accent-dim hover:file:text-bm-bg"
+              />
+              {sourceMode === 'folder' && folderFiles && (
+                <span className="text-xs text-bm-accent break-all">{folderLabel}</span>
+              )}
+            </label>
+          </div>
           <button
-            disabled={!zipFile || parsing}
+            disabled={!sourceReady || parsing}
             onClick={handleParse}
             className="px-4 py-2 rounded-lg bg-bm-accent text-bm-bg text-sm font-medium hover:opacity-90 disabled:opacity-40"
           >
-            {parsing ? 'Parsing...' : 'Parse ZIP'}
+            {parsing ? 'Parsing...' : sourceMode === 'zip' ? 'Parse ZIP' : 'Parse folder'}
           </button>
           {parseError && (
             <p className="text-sm text-red-400">{parseError}</p>

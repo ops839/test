@@ -5,8 +5,25 @@
 // thread reply attachment, alias matching.
 
 import JSZip from 'jszip';
-import { parseSlackdumpZip, formatThreadBlock, buildPrompt } from './lib/slackParser.js';
+import {
+  parseSlackdumpZip,
+  parseSlackdumpFolder,
+  formatThreadBlock,
+  buildPrompt,
+} from './lib/slackParser.js';
 import { matchClient } from './lib/aliasMap.js';
+
+// Mock browser File-with-webkitRelativePath for the folder-mode test.
+class MockFile {
+  constructor(name, webkitRelativePath, content) {
+    this.name = name;
+    this.webkitRelativePath = webkitRelativePath;
+    this._content = content;
+  }
+  async text() {
+    return this._content;
+  }
+}
 
 async function buildMockZip() {
   const zip = new JSZip();
@@ -131,6 +148,87 @@ async function main() {
   );
   // Whole-word boundary: "telly" should NOT match "tel"
   assert(matchClient('telly-channel') === null, 'tel only matches whole word');
+
+  // ─── Folder-mode parser: same fixture, but as MockFile list ────────
+  const usersJson = JSON.stringify([
+    { id: 'U001', name: 'kareem', profile: { display_name: 'Kareem T', real_name: 'Kareem Talaat' } },
+    { id: 'U002', name: 'jane', profile: { display_name: '', real_name: 'Jane Client' } },
+  ]);
+  const channelsJson = JSON.stringify([{ id: 'C100', name: 'bm-x-jencap-2024' }]);
+  const dayJson = JSON.stringify([
+    {
+      type: 'message',
+      user: 'U001',
+      text: 'Hey <@U002>, can you confirm the renewal numbers for Q2?',
+      ts: '1714329600.000100',
+      thread_ts: '1714329600.000100',
+      reply_count: 1,
+    },
+    {
+      type: 'message',
+      subtype: 'channel_join',
+      user: 'U002',
+      text: 'has joined',
+      ts: '1714329700.000100',
+    },
+  ]);
+  const threadJson = JSON.stringify([
+    {
+      type: 'message',
+      user: 'U002',
+      text: 'Confirmed — sending the file shortly.',
+      ts: '1714330000.000200',
+      thread_ts: '1714329600.000100',
+    },
+  ]);
+  const randomJson = JSON.stringify([
+    {
+      type: 'message',
+      user: 'U001',
+      text: 'Internal note',
+      ts: '1714464000.000100',
+    },
+  ]);
+
+  // Browser provides FileList where each File has webkitRelativePath
+  // anchored to the user-selected folder (e.g. "slackdump_export/...").
+  const folderFiles = [
+    new MockFile('users.json', 'slackdump_export/users.json', usersJson),
+    new MockFile('channels.json', 'slackdump_export/channels.json', channelsJson),
+    new MockFile('2024-04-28.json', 'slackdump_export/bm-x-jencap-2024/2024-04-28.json', dayJson),
+    new MockFile(
+      '1714329600.000100.json',
+      'slackdump_export/bm-x-jencap-2024/threads/1714329600.000100.json',
+      threadJson,
+    ),
+    new MockFile('2024-04-30.json', 'slackdump_export/random-internal/2024-04-30.json', randomJson),
+    // Decoy: a non-JSON file should be skipped silently
+    new MockFile('readme.txt', 'slackdump_export/readme.txt', 'ignore me'),
+  ];
+
+  const folderResult = await parseSlackdumpFolder(folderFiles);
+  assert(
+    folderResult.channels.length === 2,
+    `folder mode: 2 channels, got ${folderResult.channels.length}`,
+  );
+  const folderJencap = folderResult.channels.find((c) => c.name.includes('jencap'));
+  assert(folderJencap, 'folder mode: jencap parsed');
+  assert(
+    folderJencap.dayBuckets[0].messages[0].replies.length === 1,
+    'folder mode: thread reply attached',
+  );
+  assert(
+    folderJencap.dayBuckets[0].messages[0].author === 'Kareem T',
+    'folder mode: author resolved',
+  );
+  assert(
+    folderJencap.dayBuckets[0].messages[0].text.includes('@Jane Client'),
+    'folder mode: mention resolved',
+  );
+  assert(
+    folderResult.totalMessages === result.totalMessages,
+    `folder mode: same totalMessages (${folderResult.totalMessages} vs ${result.totalMessages})`,
+  );
 
   console.log('\nAll smoke tests passed.');
 }
