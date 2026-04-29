@@ -1,7 +1,8 @@
-// Smoke tests for Phase 2: cutoff filtering for both Sybill and Slack sources.
+// Smoke tests for Phases 2 & 4: cutoff filtering and export fingerprint.
 // Run with: node full-backfill/test-pipeline.mjs
 
 import { SYBILL_CUTOFF_DAYS, SLACK_CUTOFF_DAYS, cutoffDateStr } from './lib/cutoffs.js';
+import { computeExportFingerprint } from './lib/exportFingerprint.js';
 
 let passed = 0;
 let failed = 0;
@@ -134,6 +135,80 @@ console.log('\nSlack cutoff filtering:');
 console.log('\nConstants:');
 assert(SYBILL_CUTOFF_DAYS === 365, `SYBILL_CUTOFF_DAYS === 365 (got ${SYBILL_CUTOFF_DAYS})`);
 assert(SLACK_CUTOFF_DAYS === 30, `SLACK_CUTOFF_DAYS === 30 (got ${SLACK_CUTOFF_DAYS})`);
+
+// ─── exportFingerprint ───────────────────────────────────────────────────────
+
+console.log('\nexportFingerprint:');
+
+function makeChannels(folderNames) {
+  return folderNames.map((name) => ({ folderPath: `export/${name}`, name, dayBuckets: [] }));
+}
+
+{
+  const channels = makeChannels(['general', 'eng', 'sales']);
+  const [id1, id2] = await Promise.all([
+    computeExportFingerprint(channels),
+    computeExportFingerprint(channels),
+  ]);
+  assert(id1 === id2, 'same channels → same fingerprint (stability)');
+  assert(typeof id1 === 'string' && id1.length === 40, `fingerprint is 40-char hex (got "${id1}")`);
+  assert(/^[0-9a-f]+$/.test(id1), 'fingerprint is lowercase hex');
+}
+
+{
+  const a = makeChannels(['general', 'eng']);
+  const b = makeChannels(['general', 'sales']);
+  const [idA, idB] = await Promise.all([
+    computeExportFingerprint(a),
+    computeExportFingerprint(b),
+  ]);
+  assert(idA !== idB, 'different channels → different fingerprint');
+}
+
+{
+  // Order of channels should not matter (sorted internally)
+  const forward = makeChannels(['aaa', 'bbb', 'ccc']);
+  const reverse = makeChannels(['ccc', 'bbb', 'aaa']);
+  const [idF, idR] = await Promise.all([
+    computeExportFingerprint(forward),
+    computeExportFingerprint(reverse),
+  ]);
+  assert(idF === idR, 'channel order does not affect fingerprint');
+}
+
+{
+  const single = makeChannels(['only-channel']);
+  const id = await computeExportFingerprint(single);
+  assert(id.length === 40, 'single-channel fingerprint is 40 chars');
+}
+
+{
+  // Cache scoping: verify the shape logic used in ChannelMatchPanel.
+  // Two exports with different fingerprints should load independent choices.
+  const mockStorage = {};
+  const fakeLS = {
+    getItem: (k) => mockStorage[k] ?? null,
+    setItem: (k, v) => { mockStorage[k] = v; },
+  };
+
+  const [idA, idB] = await Promise.all([
+    computeExportFingerprint(makeChannels(['alpha'])),
+    computeExportFingerprint(makeChannels(['beta'])),
+  ]);
+
+  // Simulate saving choices for idA
+  const cacheAfterA = { [idA]: { alpha: 'Athena' } };
+  fakeLS.setItem('full-backfill:channel-cache-v1', JSON.stringify(cacheAfterA));
+
+  // Simulate hydrating idB — should get empty choices, not idA's choices
+  const cache = JSON.parse(fakeLS.getItem('full-backfill:channel-cache-v1'));
+  const choicesForB = cache[idB] ?? {};
+  assert(Object.keys(choicesForB).length === 0, 'different fingerprint loads empty choices (cache scoping)');
+
+  // Simulate hydrating idA — should restore its choices
+  const choicesForA = cache[idA] ?? {};
+  assert(choicesForA['alpha'] === 'Athena', 'same fingerprint restores cached choices');
+}
 
 // ─── summary ────────────────────────────────────────────────────────────────
 

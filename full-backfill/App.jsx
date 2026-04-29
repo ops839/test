@@ -4,6 +4,7 @@ import { groupUncertain } from '../src/lib/grouping.js';
 import SybillSourcePanel from './components/SybillSourcePanel.jsx';
 import SlackSourcePanel from './components/SlackSourcePanel.jsx';
 import SybillReview from './components/SybillReview.jsx';
+import ChannelMatchPanel from './components/ChannelMatchPanel.jsx';
 
 // Build final Airtable-ready rows from auto-classified and review-confirmed meetings.
 function buildSybillRows(autoAssigned, reviewAssigned) {
@@ -27,15 +28,19 @@ export default function App() {
 
   // ── Sybill classification (Phase 3) ─────────────────────────────────────
   const [sybillAutoAssigned, setSybillAutoAssigned] = useState(null);
-  const [sybillGroups, setSybillGroups] = useState(null);   // uncertain groups for review
-  const [sybillRows, setSybillRows] = useState(null);        // final rows after review
+  const [sybillGroups, setSybillGroups] = useState(null);
+  const [sybillRows, setSybillRows] = useState(null);
 
-  // ── Slack source (Phase 2) ───────────────────────────────────────────────
+  // ── Slack source + channel mapping (Phases 2 & 4) ───────────────────────
   const [slackParsed, setSlackParsed] = useState(null);
+  const [slackAssignments, setSlackAssignments] = useState(null);
 
   // ── Callbacks ────────────────────────────────────────────────────────────
   const handleSybillParsed = useCallback(({ meetings, droppedCount, totalCount }) => {
     setCutoffStats((prev) => ({ ...prev, sybillTotal: totalCount, sybillDropped: droppedCount }));
+    setSybillAutoAssigned(null);
+    setSybillGroups(null);
+    setSybillRows(null);
 
     // Classification is synchronous — run inline to avoid cascading effects.
     const autoAssigned = [];
@@ -60,6 +65,7 @@ export default function App() {
 
   const handleSlackParsed = useCallback(({ parsed, totalBuckets, eligibleBuckets }) => {
     setSlackParsed(parsed);
+    setSlackAssignments(null);
     setCutoffStats((prev) => ({ ...prev, slackTotal: totalBuckets, slackEligible: eligibleBuckets }));
   }, []);
 
@@ -67,10 +73,16 @@ export default function App() {
     setSybillRows(buildSybillRows(sybillAutoAssigned ?? [], reviewAssigned));
   }, [sybillAutoAssigned]);
 
+  const handleChannelMappingComplete = useCallback((assignments) => {
+    setSlackAssignments(assignments);
+  }, []);
+
   // ── Derived state ─────────────────────────────────────────────────────────
-  const bothReady = sybillRows !== null && slackParsed !== null;
+  // Merge waits on both branches completing.
+  const bothReady = sybillRows !== null && slackAssignments !== null;
   const needsReview = sybillGroups !== null && sybillGroups.length > 0 && sybillRows === null;
   const classifyDone = sybillAutoAssigned !== null;
+  const eligibleAssignments = slackAssignments?.filter((a) => a.eligible) ?? [];
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -92,25 +104,11 @@ export default function App() {
             <SlackSourcePanel onParsed={handleSlackParsed} />
           </div>
 
-          {/* Step 2: classification summary (Sybill only, shown while Slack may still be uploading) */}
-          {classifyDone && !needsReview && sybillRows !== null && (
-            <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-1">
-              <h2 className="text-base font-semibold text-bm-text">
-                <span className="text-bm-accent mr-2">2.</span>Sybill classification complete
-              </h2>
-              <p className="text-xs text-bm-muted">
-                {sybillRows.length} row{sybillRows.length !== 1 ? 's' : ''} ready
-                {sybillAutoAssigned && ` · ${sybillAutoAssigned.length} auto-assigned`}
-                {cutoffStats?.sybillDropped > 0 && ` · ${cutoffStats.sybillDropped} dropped by cutoff`}
-              </p>
-            </section>
-          )}
-
-          {/* Step 2 (review path): show review while Slack can still be uploading */}
+          {/* Step 2a: Sybill review (shown while Slack may still be uploading) */}
           {needsReview && (
             <section className="space-y-3">
               <h2 className="text-base font-semibold text-bm-text px-1">
-                <span className="text-bm-accent mr-2">2.</span>
+                <span className="text-bm-accent mr-2">2a.</span>
                 Review uncertain Sybill meetings
                 <span className="text-bm-muted font-normal text-xs ml-2">
                   ({sybillGroups.length} group{sybillGroups.length !== 1 ? 's' : ''})
@@ -121,7 +119,43 @@ export default function App() {
             </section>
           )}
 
-          {/* Step 3: both sources ready — next phases will go here */}
+          {/* Step 2a complete (no review needed) */}
+          {classifyDone && !needsReview && sybillRows !== null && (
+            <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-1">
+              <h2 className="text-base font-semibold text-bm-text">
+                <span className="text-bm-accent mr-2">2a.</span>Sybill classification complete
+              </h2>
+              <p className="text-xs text-bm-muted">
+                {sybillRows.length} row{sybillRows.length !== 1 ? 's' : ''} ready
+                {sybillAutoAssigned && ` · ${sybillAutoAssigned.length} auto-assigned`}
+                {cutoffStats?.sybillDropped > 0 && ` · ${cutoffStats.sybillDropped} dropped by cutoff`}
+              </p>
+            </section>
+          )}
+
+          {/* Step 2b: Slack channel mapping (shown once Slack parses, before merge) */}
+          {slackParsed && slackAssignments === null && (
+            <ChannelMatchPanel
+              parsed={slackParsed}
+              onComplete={handleChannelMappingComplete}
+            />
+          )}
+
+          {/* Step 2b complete */}
+          {slackAssignments !== null && (
+            <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-1">
+              <h2 className="text-base font-semibold text-bm-text">
+                <span className="text-bm-accent mr-2">2b.</span>Channel mapping complete
+              </h2>
+              <p className="text-xs text-bm-muted">
+                {slackAssignments.length} bucket{slackAssignments.length !== 1 ? 's' : ''} assigned
+                {' · '}
+                {eligibleAssignments.length} eligible for summarization
+              </p>
+            </section>
+          )}
+
+          {/* Step 3: both branches done — merge point */}
           {bothReady && (
             <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-2">
               <h2 className="text-base font-semibold text-bm-text">
@@ -130,12 +164,10 @@ export default function App() {
               <p className="text-xs text-bm-muted">
                 {sybillRows.length} Sybill row{sybillRows.length !== 1 ? 's' : ''}
                 {' · '}
-                {slackParsed.channels.length} Slack channel{slackParsed.channels.length !== 1 ? 's' : ''}
-                {cutoffStats?.slackEligible != null &&
-                  ` · ${cutoffStats.slackEligible} / ${cutoffStats.slackTotal} buckets eligible`}
+                {eligibleAssignments.length} eligible Slack bucket{eligibleAssignments.length !== 1 ? 's' : ''}
               </p>
               <p className="text-xs text-bm-muted">
-                Channel mapping and AI summarization coming in the next phases.
+                AI summarization and Airtable write coming in the next phases.
               </p>
             </section>
           )}
