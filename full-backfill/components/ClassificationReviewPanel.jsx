@@ -3,7 +3,10 @@ import { KNOWN_CLIENTS } from '../../src/lib/classifier.js';
 import { computeSybillFingerprint } from '../lib/sybillFingerprint.js';
 import { applyClassificationOverrides } from '../lib/classificationOverrides.js';
 
-const CACHE_KEY = 'full-backfill:classification-overrides-v1';
+// One localStorage entry per export fingerprint:
+//   full-backfill:classification-overrides-v1:<sybillFingerprint>
+// Easier to inspect/clear individual exports than a single map-of-maps.
+const CACHE_KEY_PREFIX = 'full-backfill:classification-overrides-v1';
 
 export default function ClassificationReviewPanel({
   autoAssigned,
@@ -22,8 +25,8 @@ export default function ClassificationReviewPanel({
       if (cancelled) return;
       setFingerprint(fp);
       try {
-        const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
-        setOverrides(cache[fp] ?? {});
+        const raw = localStorage.getItem(`${CACHE_KEY_PREFIX}:${fp}`);
+        setOverrides(raw ? JSON.parse(raw) : {});
       } catch {
         setOverrides({});
       }
@@ -31,13 +34,11 @@ export default function ClassificationReviewPanel({
     return () => { cancelled = true; };
   }, [meetings]);
 
-  // Persist overrides to localStorage under the current fingerprint.
+  // Persist overrides to a per-fingerprint localStorage key.
   useEffect(() => {
     if (!fingerprint) return;
     try {
-      const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
-      cache[fingerprint] = overrides;
-      localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+      localStorage.setItem(`${CACHE_KEY_PREFIX}:${fingerprint}`, JSON.stringify(overrides));
     } catch {
       // quota: ignore
     }
