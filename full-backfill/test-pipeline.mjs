@@ -375,6 +375,12 @@ console.log('\nairtable wipe-then-insert order:');
   assert(deleteCall.url.includes('rec1') && deleteCall.url.includes('rec2'),
     'DELETE URL contains record ids');
 
+  // Regression: empty fields[]= caused Airtable UNKNOWN_FIELD_NAME on real
+  // API. The list call must not include a fields[] param at all.
+  const listCall = fetchLog.find((c) => c.method === 'GET' && c.url.includes('Athena'));
+  assert(listCall && !listCall.url.includes('fields%5B%5D=') && !listCall.url.includes('fields[]='),
+    'wipeTable list URL has no empty fields[] param');
+
   setFetchOverride(null);
   setBucketOverride(null);
 }

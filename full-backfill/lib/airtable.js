@@ -99,7 +99,6 @@ export async function wipeTable(baseId, tableName, pat, onProgress) {
   do {
     const url = new URL(`${API_BASE}/${baseId}/${encodeURIComponent(tableName)}`);
     url.searchParams.set('pageSize', '100');
-    url.searchParams.set('fields[]', '');
     if (offset) url.searchParams.set('offset', offset);
     const data = await request(url.toString(), {
       headers: { Authorization: `Bearer ${pat}` },
