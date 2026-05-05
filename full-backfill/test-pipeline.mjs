@@ -19,9 +19,11 @@ import {
   findMissingTables,
   findMissingColumns,
   REQUIRED_COLUMNS,
+  CREATE_TABLE_FIELDS,
   wipeTable,
   insertRecords,
   getBaseSchema,
+  createTable,
   setBucketOverride,
   setFetchOverride,
 } from './lib/airtable.js';
@@ -596,6 +598,49 @@ console.log('\nfull pipeline smoke test:');
 
   assert(insertLog['Athena'] === 4, `Athena table received 4 inserts (got ${insertLog['Athena']})`);
   assert(insertLog['Bushel'] === 2, `Bushel table received 2 inserts (got ${insertLog['Bushel']})`);
+
+  setFetchOverride(null);
+  setBucketOverride(null);
+}
+
+// ─── airtable createTable ───────────────────────────────────────────────────
+
+console.log('\nairtable createTable:');
+
+{
+  setBucketOverride(new TokenBucket(1000, 1000));
+  let postUrl = null;
+  let postBody = null;
+  setFetchOverride(async (url, options) => {
+    if (options?.method === 'POST') {
+      postUrl = url.toString();
+      postBody = JSON.parse(options.body);
+      return {
+        ok: true, status: 200,
+        json: async () => ({ id: 'tblNew', name: postBody.name, fields: postBody.fields }),
+        text: async () => '',
+      };
+    }
+    return { ok: false, status: 500, json: async () => ({}), text: async () => '' };
+  });
+
+  const result = await createTable('appBase', 'NewClient', 'patFake');
+  assert(postUrl.endsWith('/meta/bases/appBase/tables'),
+    `POST hits /meta/bases/{baseId}/tables (got ${postUrl})`);
+  assert(postBody.name === 'NewClient', 'request body has table name');
+  const fieldNames = postBody.fields.map((f) => f.name);
+  for (const col of REQUIRED_COLUMNS) {
+    assert(fieldNames.includes(col), `'${col}' field present in create body`);
+  }
+  assert(fieldNames.includes('Source'), "'Source' field added on top of v2 schema");
+  assert(postBody.fields[0].name === 'Meeting Name',
+    'Meeting Name is the first (primary) field');
+  const dateField = postBody.fields.find((f) => f.name === 'Engagement Date');
+  assert(dateField?.type === 'date', "'Engagement Date' uses date field type");
+  assert(dateField?.options?.dateFormat?.name === 'iso',
+    "'Engagement Date' configured with ISO date format");
+  assert(result.id === 'tblNew', 'createTable returns the parsed table object');
+  assert(CREATE_TABLE_FIELDS.length === 8, '8 fields total (v2 schema + Source)');
 
   setFetchOverride(null);
   setBucketOverride(null);

@@ -3,6 +3,7 @@ import {
   getBaseSchema,
   wipeTable,
   insertRecords,
+  createTable,
   findMissingTables,
   findMissingColumns,
   REQUIRED_COLUMNS,
@@ -15,14 +16,16 @@ const SECRETS_VALID =
   typeof AIRTABLE_BASE_ID === 'string' && AIRTABLE_BASE_ID.startsWith('app');
 
 // Phases:
-//   needs-secrets  → secrets.js still holds placeholders
-//   preflight      → fetching base schema
-//   halted-tables  → schema returned, but client tables missing
-//   halted-cols    → tables exist but required columns missing
-//   ready          → preflight passed, awaiting confirmation
-//   writing        → wipe + insert in progress
-//   done           → all writes succeeded
-//   error          → schema fetch or write failed; retry button shown
+//   needs-secrets    → secrets.js still holds placeholders
+//   preflight        → fetching base schema
+//   missing-tables   → schema returned with missing tables; offer auto-create
+//   creating-tables  → auto-create in progress
+//   cancelled-create → user cancelled auto-create; manual fix + retry
+//   halted-cols      → tables exist but required columns missing
+//   ready            → preflight passed, awaiting confirmation
+//   writing          → wipe + insert in progress
+//   done             → all writes succeeded
+//   error            → schema fetch or write failed; retry button shown
 
 export default function AirtableWritePanel({ rows, onComplete }) {
   const [phase, setPhase] = useState(SECRETS_VALID ? 'preflight' : 'needs-secrets');
@@ -30,6 +33,7 @@ export default function AirtableWritePanel({ rows, onComplete }) {
   const [missingTables, setMissingTables] = useState([]);
   const [columnIssues, setColumnIssues] = useState([]);
   const [progress, setProgress] = useState({});
+  const [createProgress, setCreateProgress] = useState({ done: 0, total: 0 });
 
   const byClient = useMemo(() => {
     const m = new Map();
@@ -53,7 +57,7 @@ export default function AirtableWritePanel({ rows, onComplete }) {
         const missing = findMissingTables(schema, targetClients);
         if (missing.length > 0) {
           setMissingTables(missing);
-          setPhase('halted-tables');
+          setPhase('missing-tables');
           return;
         }
         const issues = [];
@@ -76,6 +80,28 @@ export default function AirtableWritePanel({ rows, onComplete }) {
     })();
     return () => { cancelled = true; };
   }, [phase, targetClients]);
+
+  async function createMissingTables() {
+    setPhase('creating-tables');
+    setError(null);
+    setCreateProgress({ done: 0, total: missingTables.length });
+    try {
+      for (let i = 0; i < missingTables.length; i++) {
+        await createTable(AIRTABLE_BASE_ID, missingTables[i], AIRTABLE_PAT);
+        setCreateProgress({ done: i + 1, total: missingTables.length });
+      }
+      // Re-run preflight so the new tables are picked up.
+      setMissingTables([]);
+      setPhase('preflight');
+    } catch (e) {
+      setError(e.message || String(e));
+      setPhase('error');
+    }
+  }
+
+  function cancelCreate() {
+    setPhase('cancelled-create');
+  }
 
   async function runWrites() {
     setPhase('writing');
@@ -136,12 +162,48 @@ export default function AirtableWritePanel({ rows, onComplete }) {
         <p className="text-sm text-bm-muted">Reading Airtable base schema…</p>
       )}
 
-      {phase === 'halted-tables' && (
-        <div className="space-y-2">
-          <p className="text-sm text-red-400">
-            These clients have no table in the base. Create them in Airtable then rerun:
+      {phase === 'missing-tables' && (
+        <div className="space-y-3">
+          <p className="text-sm text-bm-text">
+            These {missingTables.length} client table{missingTables.length !== 1 ? 's' : ''} don&apos;t exist yet:
           </p>
-          <ul className="text-sm text-bm-text font-mono pl-4 space-y-1">
+          <ul className="text-sm text-bm-text font-mono pl-4 space-y-1 max-h-40 overflow-y-auto">
+            {missingTables.map((c) => (<li key={c}>• {c}</li>))}
+          </ul>
+          <p className="text-xs text-bm-muted">
+            They will be created with the v2 schema (Meeting Name, Engagement Date,
+            Type of Engagement, Attendees, Summary, Action Items, Slack Message,
+            Source). Existing client tables aren&apos;t touched.
+          </p>
+          <div className="flex gap-3 flex-wrap">
+            <button onClick={createMissingTables} className="px-4 py-2 rounded-lg bg-bm-accent text-bm-bg text-sm font-medium hover:opacity-90">
+              Yes, create {missingTables.length} table{missingTables.length !== 1 ? 's' : ''}
+            </button>
+            <button onClick={cancelCreate} className="px-3 py-1.5 rounded border border-bm-border text-sm text-bm-text hover:border-bm-accent-dim">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase === 'creating-tables' && (
+        <div className="space-y-2">
+          <p className="text-sm text-bm-text">
+            Creating {createProgress.total} table{createProgress.total !== 1 ? 's' : ''}…
+          </p>
+          <p className="text-xs text-bm-muted font-mono">
+            {createProgress.done} / {createProgress.total} created
+          </p>
+        </div>
+      )}
+
+      {phase === 'cancelled-create' && (
+        <div className="space-y-2">
+          <p className="text-sm text-bm-muted">
+            Auto-create cancelled. Create the missing tables in Airtable manually,
+            then click retry:
+          </p>
+          <ul className="text-sm text-bm-text font-mono pl-4 space-y-1 max-h-40 overflow-y-auto">
             {missingTables.map((c) => (<li key={c}>• {c}</li>))}
           </ul>
           <button onClick={retry} className="px-3 py-1.5 rounded border border-bm-border text-sm text-bm-text hover:border-bm-accent-dim">
