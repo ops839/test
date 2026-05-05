@@ -6,6 +6,7 @@ import { buildSybillRows, buildSlackRows } from './lib/mergeRows.js';
 import SybillSourcePanel from './components/SybillSourcePanel.jsx';
 import SlackSourcePanel from './components/SlackSourcePanel.jsx';
 import SybillReview from './components/SybillReview.jsx';
+import ClassificationReviewPanel from './components/ClassificationReviewPanel.jsx';
 import ChannelMatchPanel from './components/ChannelMatchPanel.jsx';
 import CostPreview from './components/CostPreview.jsx';
 import RunPanel from './components/RunPanel.jsx';
@@ -16,8 +17,10 @@ export default function App() {
   const [cutoffStats, setCutoffStats] = useState(null);
 
   // ── Sybill classification (Phase 3) ─────────────────────────────────────
+  const [sybillMeetings, setSybillMeetings] = useState(null);
   const [sybillAutoAssigned, setSybillAutoAssigned] = useState(null);
   const [sybillGroups, setSybillGroups] = useState(null);
+  const [sybillReviewAssigned, setSybillReviewAssigned] = useState(null);
   const [sybillRows, setSybillRows] = useState(null);
 
   // ── Slack source + channel mapping (Phases 2 & 4) ───────────────────────
@@ -32,8 +35,10 @@ export default function App() {
   // ── Callbacks ────────────────────────────────────────────────────────────
   const handleSybillParsed = useCallback(({ meetings, droppedCount, totalCount }) => {
     setCutoffStats((prev) => ({ ...prev, sybillTotal: totalCount, sybillDropped: droppedCount }));
+    setSybillMeetings(meetings);
     setSybillAutoAssigned(null);
     setSybillGroups(null);
+    setSybillReviewAssigned(null);
     setSybillRows(null);
 
     // Classification is synchronous — run inline to avoid cascading effects.
@@ -52,8 +57,10 @@ export default function App() {
     if (uncertain.length > 0) {
       setSybillGroups(groupUncertain(uncertain));
     } else {
+      // No uncertain meetings — skip past the two-pane review and go straight
+      // to the all-classifications review.
       setSybillGroups([]);
-      setSybillRows(buildSybillRows(autoAssigned, []));
+      setSybillReviewAssigned([]);
     }
   }, []);
 
@@ -64,8 +71,12 @@ export default function App() {
   }, []);
 
   const handleReviewComplete = useCallback((reviewAssigned) => {
-    setSybillRows(buildSybillRows(sybillAutoAssigned ?? [], reviewAssigned));
-  }, [sybillAutoAssigned]);
+    setSybillReviewAssigned(reviewAssigned);
+  }, []);
+
+  const handleClassificationsConfirmed = useCallback((finalAssignments) => {
+    setSybillRows(buildSybillRows(finalAssignments, []));
+  }, []);
 
   const handleChannelMappingComplete = useCallback((assignments) => {
     setSlackAssignments(assignments);
@@ -83,8 +94,10 @@ export default function App() {
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const bothReady = sybillRows !== null && slackAssignments !== null;
-  const needsReview = sybillGroups !== null && sybillGroups.length > 0 && sybillRows === null;
-  const classifyDone = sybillAutoAssigned !== null;
+  const needsReview =
+    sybillGroups !== null && sybillGroups.length > 0 && sybillReviewAssigned === null;
+  const needsClassificationReview =
+    sybillAutoAssigned !== null && sybillReviewAssigned !== null && sybillRows === null;
   const eligibleAssignments = slackAssignments?.filter((a) => a.eligible) ?? [];
 
   return (
@@ -122,8 +135,18 @@ export default function App() {
             </section>
           )}
 
-          {/* Step 2a complete (no review needed) */}
-          {classifyDone && !needsReview && sybillRows !== null && (
+          {/* Step 2c: review all classifications */}
+          {needsClassificationReview && (
+            <ClassificationReviewPanel
+              autoAssigned={sybillAutoAssigned}
+              reviewAssigned={sybillReviewAssigned}
+              meetings={sybillMeetings}
+              onComplete={handleClassificationsConfirmed}
+            />
+          )}
+
+          {/* Sybill done — summary card */}
+          {sybillRows !== null && (
             <section className="rounded-xl border border-bm-border bg-bm-panel p-6 space-y-1">
               <h2 className="text-base font-semibold text-bm-text">
                 <span className="text-bm-accent mr-2">2a.</span>Sybill classification complete

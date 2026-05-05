@@ -601,6 +601,98 @@ console.log('\nfull pipeline smoke test:');
   setBucketOverride(null);
 }
 
+// ─── sybillFingerprint ──────────────────────────────────────────────────────
+
+import { computeSybillFingerprint } from './lib/sybillFingerprint.js';
+
+console.log('\nsybillFingerprint:');
+
+{
+  const meetings = [
+    { date: '2026-04-01', title: 'Athena Q2' },
+    { date: '2026-04-02', title: 'Bushel sync' },
+    { date: '2026-04-03', title: 'InnoVint roadmap' },
+  ];
+  const [a, b] = await Promise.all([
+    computeSybillFingerprint(meetings),
+    computeSybillFingerprint(meetings),
+  ]);
+  assert(a === b, 'same meetings → same fingerprint (stability)');
+  assert(typeof a === 'string' && a.length === 40, `fingerprint is 40-char hex (got "${a}")`);
+  assert(/^[0-9a-f]+$/.test(a), 'fingerprint is lowercase hex');
+
+  const reordered = [meetings[2], meetings[0], meetings[1]];
+  const r = await computeSybillFingerprint(reordered);
+  assert(a === r, 'meeting order does not affect fingerprint');
+
+  const different = [...meetings, { date: '2026-04-04', title: 'New mtg' }];
+  const d = await computeSybillFingerprint(different);
+  assert(a !== d, 'different meetings → different fingerprint');
+}
+
+// ─── applyClassificationOverrides ───────────────────────────────────────────
+
+import { applyClassificationOverrides } from './lib/classificationOverrides.js';
+
+console.log('\napplyClassificationOverrides:');
+
+{
+  const autoAssigned = [
+    { meeting: { id: 1 }, client: 'HubSpot' },
+    { meeting: { id: 2 }, client: 'HubSpot' },
+    { meeting: { id: 3 }, client: 'Athena' },
+  ];
+  const reviewAssigned = [
+    { meeting: { id: 4 }, client: 'Bushel' },
+  ];
+
+  // No overrides → keep all
+  let r = applyClassificationOverrides(autoAssigned, reviewAssigned, {});
+  assert(r.length === 4, 'no overrides → all 4 kept');
+
+  // KEEP explicitly → no change
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, { HubSpot: { action: 'KEEP' } });
+  assert(r.length === 4 && r.filter((a) => a.client === 'HubSpot').length === 2,
+    'KEEP retains the original group');
+
+  // SKIP → drops the group
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, { HubSpot: { action: 'SKIP' } });
+  assert(r.length === 2, 'SKIP drops 2 HubSpot meetings → 2 remain');
+  assert(!r.some((a) => a.client === 'HubSpot'), 'no HubSpot remains after SKIP');
+
+  // SWITCH → consolidates into existing client
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
+    HubSpot: { action: 'SWITCH', target: 'Athena' },
+  });
+  assert(r.filter((a) => a.client === 'Athena').length === 3,
+    'SWITCH HubSpot → Athena: 1 + 2 = 3 Athena rows');
+  assert(!r.some((a) => a.client === 'HubSpot'), 'HubSpot removed after SWITCH');
+
+  // RENAME → relabels group to a new typed name
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
+    HubSpot: { action: 'RENAME', target: 'HubSpot Inc' },
+  });
+  assert(r.filter((a) => a.client === 'HubSpot Inc').length === 2,
+    'RENAME relabels 2 HubSpot → HubSpot Inc');
+  assert(!r.some((a) => a.client === 'HubSpot'), 'original name gone after RENAME');
+
+  // RENAME with empty target → falls back to original (don't silently lose meetings)
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
+    HubSpot: { action: 'RENAME', target: '' },
+  });
+  assert(r.filter((a) => a.client === 'HubSpot').length === 2,
+    'RENAME with empty target falls back to original client name');
+
+  // Multiple overrides at once
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
+    HubSpot: { action: 'SKIP' },
+    Bushel: { action: 'RENAME', target: 'Bushel Co' },
+  });
+  assert(r.length === 2, 'SKIP + RENAME applied together → 2 rows');
+  assert(r.find((a) => a.client === 'Bushel Co'), 'Bushel renamed to Bushel Co');
+  assert(r.find((a) => a.client === 'Athena'), 'untouched group preserved');
+}
+
 // ─── summary ────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);
