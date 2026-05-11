@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   callClaude,
   runWithConcurrency,
@@ -7,6 +7,13 @@ import {
 import { buildPrompt } from '../../slack-backfill/lib/slackParser.js';
 import { ANTHROPIC_API_KEY } from '../lib/secrets.js';
 import { saveCheckpoint } from '../lib/checkpoint.js';
+import {
+  computeSlackAssignmentsFingerprint,
+  loadSlackSummaries,
+  saveSlackSummaries,
+  summariesToCacheShape,
+  cacheToSummariesShape,
+} from '../lib/slackSummaryCache.js';
 
 const CONCURRENCY = 16;
 const API_ENABLED =
@@ -18,6 +25,27 @@ export default function RunPanel({ slackAssignments, model, onComplete }) {
   const [summaries, setSummaries] = useState({});
   const [running, setRunning] = useState(false);
   const [started, setStarted] = useState(false);
+  const [fingerprint, setFingerprint] = useState(null);
+  const [hydratedFromCache, setHydratedFromCache] = useState(false);
+
+  // Compute fingerprint + hydrate any cached summaries from a prior run.
+  useEffect(() => {
+    let cancelled = false;
+    computeSlackAssignmentsFingerprint(slackAssignments).then((fp) => {
+      if (cancelled) return;
+      setFingerprint(fp);
+      const cached = loadSlackSummaries(fp);
+      if (cached) {
+        const restored = cacheToSummariesShape(slackAssignments, cached);
+        if (Object.keys(restored).length > 0) {
+          setSummaries(restored);
+          setHydratedFromCache(true);
+          setStarted(true);
+        }
+      }
+    });
+    return () => { cancelled = true; };
+  }, [slackAssignments]);
 
   const eligibleWithIdx = slackAssignments
     .map((a, i) => ({ ...a, originalIdx: i }))
@@ -58,13 +86,17 @@ export default function RunPanel({ slackAssignments, model, onComplete }) {
 
     setRunning(false);
     saveCheckpoint({ model, slackSummaries: localSummaries });
+    if (fingerprint) {
+      saveSlackSummaries(fingerprint, summariesToCacheShape(slackAssignments, localSummaries));
+    }
     return localSummaries;
   }
 
   async function handleStart() {
     setStarted(true);
-    setSummaries({});
-    await runBatch(eligibleWithIdx, {});
+    // Keep any cache-hydrated summaries; only run buckets we don't have yet.
+    const toRun = eligibleWithIdx.filter((a) => !summaries[a.originalIdx]?.summary);
+    await runBatch(toRun, summaries);
   }
 
   async function handleRetryFailed() {
@@ -77,6 +109,9 @@ export default function RunPanel({ slackAssignments, model, onComplete }) {
 
   function handleContinue() {
     saveCheckpoint({ model, slackSummaries: summaries });
+    if (fingerprint) {
+      saveSlackSummaries(fingerprint, summariesToCacheShape(slackAssignments, summaries));
+    }
     onComplete(summaries);
   }
 
@@ -140,8 +175,25 @@ export default function RunPanel({ slackAssignments, model, onComplete }) {
         </div>
       )}
 
+      {started && !running && doneCount < totalEligible && (
+        <div>
+          <button
+            onClick={handleStart}
+            className="px-4 py-2 rounded-lg bg-bm-accent text-bm-bg text-sm font-medium hover:opacity-90"
+          >
+            Run {totalEligible - doneCount} missing bucket{totalEligible - doneCount !== 1 ? 's' : ''}
+          </button>
+        </div>
+      )}
+
       {started && (
         <div className="space-y-3">
+          {hydratedFromCache && (
+            <p className="text-xs text-bm-muted">
+              Restored {Object.keys(summaries).length} summar{Object.keys(summaries).length !== 1 ? 'ies' : 'y'} from cache.
+              Re-runs only the missing/failed buckets.
+            </p>
+          )}
           <p className="text-sm text-bm-text">
             {running ? 'Running…' : 'Complete.'}
             {' '}

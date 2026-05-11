@@ -122,12 +122,15 @@ export async function wipeTable(baseId, tableName, pat, onProgress) {
   return deleted;
 }
 
-// Insert records, batched at 10 per POST.
+// Insert records, batched at 10 per POST. Counts records *confirmed by
+// Airtable* via the response body's records[] length, not the request size,
+// so the per-table progress reflects what actually landed if the API silently
+// drops or rejects rows.
 export async function insertRecords(baseId, tableName, rows, pat, onProgress) {
   let inserted = 0;
   for (let i = 0; i < rows.length; i += 10) {
     const batch = rows.slice(i, i + 10);
-    await request(`${API_BASE}/${baseId}/${encodeURIComponent(tableName)}`, {
+    const data = await request(`${API_BASE}/${baseId}/${encodeURIComponent(tableName)}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${pat}`,
@@ -135,7 +138,7 @@ export async function insertRecords(baseId, tableName, rows, pat, onProgress) {
       },
       body: JSON.stringify({ records: batch.map((fields) => ({ fields })) }),
     });
-    inserted += batch.length;
+    inserted += Array.isArray(data?.records) ? data.records.length : 0;
     onProgress?.(inserted, rows.length);
   }
   return inserted;

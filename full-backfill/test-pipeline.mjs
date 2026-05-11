@@ -340,9 +340,14 @@ console.log('\nairtable wipe-then-insert order:');
       };
     }
     if (method === 'POST') {
+      // Echo back one created record per sent record, matching Airtable's
+      // real response shape so insertRecords's response-based counter agrees.
+      const body = JSON.parse(options.body);
       return {
         ok: true, status: 200,
-        json: async () => ({ records: [{ id: 'recNew' }] }),
+        json: async () => ({
+          records: body.records.map((_, i) => ({ id: `recNew${i}` })),
+        }),
         text: async () => '',
       };
     }
@@ -394,7 +399,12 @@ console.log('\nairtable batching:');
   let postCount = 0;
   setFetchOverride(async (_url, options) => {
     if (options?.method === 'POST') postCount += 1;
-    return { ok: true, status: 200, json: async () => ({ records: [] }), text: async () => '' };
+    const body = JSON.parse(options.body);
+    return {
+      ok: true, status: 200,
+      json: async () => ({ records: body.records.map((_, i) => ({ id: `r${i}` })) }),
+      text: async () => '',
+    };
   });
 
   const rows = Array.from({ length: 25 }, (_, i) => ({ name: `r${i}` }));
@@ -961,6 +971,116 @@ console.log('\naiSybillClassifier handles per-meeting failure:');
     'other 2 meetings classified normally');
 
   setAiFetchOverride(null);
+}
+
+// ─── insertRecords counts from response ─────────────────────────────────────
+
+console.log('\nairtable insertRecords counts from response:');
+
+{
+  setBucketOverride(new TokenBucket(1000, 1000));
+
+  // Server confirms only 3 of 10 records on each batch (simulating a silent drop).
+  setFetchOverride(async (_url, options) => {
+    const body = JSON.parse(options.body);
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        records: body.records.slice(0, 3).map((_, i) => ({ id: `rec${i}` })),
+      }),
+      text: async () => '',
+    };
+  });
+
+  const rows = Array.from({ length: 10 }, (_, i) => ({ name: `r${i}` }));
+  const inserted = await insertRecords('appBase', 'T', rows, 'patFake');
+  assert(inserted === 3,
+    `insertRecords returns server-confirmed count, not sent count (got ${inserted}, expected 3)`);
+
+  setFetchOverride(null);
+  setBucketOverride(null);
+}
+
+// ─── slackSummaryCache ──────────────────────────────────────────────────────
+
+import {
+  computeSlackAssignmentsFingerprint,
+  loadSlackSummaries,
+  saveSlackSummaries,
+  summariesToCacheShape,
+  cacheToSummariesShape,
+} from './lib/slackSummaryCache.js';
+
+console.log('\nslackSummaryCache fingerprint:');
+{
+  const a = [
+    { channelName: 'athena', date: '2026-04-20' },
+    { channelName: 'bushel', date: '2026-04-21' },
+  ];
+  const [fp1, fp2] = await Promise.all([
+    computeSlackAssignmentsFingerprint(a),
+    computeSlackAssignmentsFingerprint(a),
+  ]);
+  assert(fp1 === fp2, 'same assignments → same fingerprint');
+  assert(fp1.length === 40, '40-char SHA-1 hex');
+
+  const reordered = [a[1], a[0]];
+  const fpR = await computeSlackAssignmentsFingerprint(reordered);
+  assert(fp1 === fpR, 'assignment order does not affect fingerprint');
+
+  const different = [...a, { channelName: 'extra', date: '2026-04-22' }];
+  const fpD = await computeSlackAssignmentsFingerprint(different);
+  assert(fp1 !== fpD, 'different assignments → different fingerprint');
+}
+
+console.log('\nslackSummaryCache shape conversions:');
+{
+  const assignments = [
+    { channelName: 'athena', date: '2026-04-20', targetClient: 'Athena', eligible: true },
+    { channelName: 'bushel', date: '2026-04-21', targetClient: 'Bushel', eligible: true },
+    { channelName: 'old',    date: '2025-12-01', targetClient: 'Athena', eligible: false },
+  ];
+  const summariesByIdx = {
+    0: { summary: 'Athena summary', inputTokens: 100, outputTokens: 20 },
+    1: { summary: 'Bushel summary', inputTokens: 90, outputTokens: 18 },
+    // 2: error or absent
+    2: { error: 'rate limit' },
+  };
+
+  const cacheShape = summariesToCacheShape(assignments, summariesByIdx);
+  assert(Object.keys(cacheShape).length === 2,
+    'only entries with .summary are cached (errors dropped)');
+  assert(cacheShape['athena|2026-04-20']?.summary === 'Athena summary',
+    'cache keyed by channelName|date');
+  assert(!cacheShape['old|2025-12-01'], 'errored entry not in cache');
+
+  // Round-trip
+  const restored = cacheToSummariesShape(assignments, cacheShape);
+  assert(restored[0]?.summary === 'Athena summary', 'restored idx 0');
+  assert(restored[1]?.summary === 'Bushel summary', 'restored idx 1');
+  assert(restored[2] === undefined, 'errored entry stays uncached');
+
+  // Cache miss when assignments differ
+  const differentAssignments = [
+    { channelName: 'unmatched', date: '2026-04-20' },
+  ];
+  const restoredMiss = cacheToSummariesShape(differentAssignments, cacheShape);
+  assert(Object.keys(restoredMiss).length === 0,
+    'unrelated assignments get no cache hits');
+}
+
+console.log('\nslackSummaryCache load/save roundtrip:');
+{
+  const fp = 'test-fp-roundtrip';
+  saveSlackSummaries(fp, { 'a|2026-04-20': { summary: 'hi' } });
+  const loaded = loadSlackSummaries(fp);
+  assert(loaded?.['a|2026-04-20']?.summary === 'hi', 'roundtrip preserves summary');
+
+  // Missing key → null
+  const missing = loadSlackSummaries('not-a-real-fp');
+  assert(missing === null, 'missing fingerprint returns null');
+
+  globalThis.localStorage.removeItem(`full-backfill:slack-summaries-v1:${fp}`);
 }
 
 // ─── summary ────────────────────────────────────────────────────────────────
