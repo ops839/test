@@ -19,9 +19,11 @@ import {
   findMissingTables,
   findMissingColumns,
   REQUIRED_COLUMNS,
+  CREATE_TABLE_FIELDS,
   wipeTable,
   insertRecords,
   getBaseSchema,
+  createTable,
   setBucketOverride,
   setFetchOverride,
 } from './lib/airtable.js';
@@ -373,6 +375,12 @@ console.log('\nairtable wipe-then-insert order:');
   assert(deleteCall.url.includes('rec1') && deleteCall.url.includes('rec2'),
     'DELETE URL contains record ids');
 
+  // Regression: empty fields[]= caused Airtable UNKNOWN_FIELD_NAME on real
+  // API. The list call must not include a fields[] param at all.
+  const listCall = fetchLog.find((c) => c.method === 'GET' && c.url.includes('Athena'));
+  assert(listCall && !listCall.url.includes('fields%5B%5D=') && !listCall.url.includes('fields[]='),
+    'wipeTable list URL has no empty fields[] param');
+
   setFetchOverride(null);
   setBucketOverride(null);
 }
@@ -599,6 +607,360 @@ console.log('\nfull pipeline smoke test:');
 
   setFetchOverride(null);
   setBucketOverride(null);
+}
+
+// ─── airtable createTable ───────────────────────────────────────────────────
+
+console.log('\nairtable createTable:');
+
+{
+  setBucketOverride(new TokenBucket(1000, 1000));
+  let postUrl = null;
+  let postBody = null;
+  setFetchOverride(async (url, options) => {
+    if (options?.method === 'POST') {
+      postUrl = url.toString();
+      postBody = JSON.parse(options.body);
+      return {
+        ok: true, status: 200,
+        json: async () => ({ id: 'tblNew', name: postBody.name, fields: postBody.fields }),
+        text: async () => '',
+      };
+    }
+    return { ok: false, status: 500, json: async () => ({}), text: async () => '' };
+  });
+
+  const result = await createTable('appBase', 'NewClient', 'patFake');
+  assert(postUrl.endsWith('/meta/bases/appBase/tables'),
+    `POST hits /meta/bases/{baseId}/tables (got ${postUrl})`);
+  assert(postBody.name === 'NewClient', 'request body has table name');
+  const fieldNames = postBody.fields.map((f) => f.name);
+  for (const col of REQUIRED_COLUMNS) {
+    assert(fieldNames.includes(col), `'${col}' field present in create body`);
+  }
+  assert(fieldNames.includes('Source'), "'Source' field added on top of v2 schema");
+  assert(postBody.fields[0].name === 'Meeting Name',
+    'Meeting Name is the first (primary) field');
+  const dateField = postBody.fields.find((f) => f.name === 'Engagement Date');
+  assert(dateField?.type === 'date', "'Engagement Date' uses date field type");
+  assert(dateField?.options?.dateFormat?.name === 'iso',
+    "'Engagement Date' configured with ISO date format");
+  assert(result.id === 'tblNew', 'createTable returns the parsed table object');
+  assert(CREATE_TABLE_FIELDS.length === 8, '8 fields total (v2 schema + Source)');
+
+  setFetchOverride(null);
+  setBucketOverride(null);
+}
+
+// ─── sybillFingerprint ──────────────────────────────────────────────────────
+
+import { computeSybillFingerprint } from './lib/sybillFingerprint.js';
+
+console.log('\nsybillFingerprint:');
+
+{
+  const meetings = [
+    { date: '2026-04-01', title: 'Athena Q2' },
+    { date: '2026-04-02', title: 'Bushel sync' },
+    { date: '2026-04-03', title: 'InnoVint roadmap' },
+  ];
+  const [a, b] = await Promise.all([
+    computeSybillFingerprint(meetings),
+    computeSybillFingerprint(meetings),
+  ]);
+  assert(a === b, 'same meetings → same fingerprint (stability)');
+  assert(typeof a === 'string' && a.length === 40, `fingerprint is 40-char hex (got "${a}")`);
+  assert(/^[0-9a-f]+$/.test(a), 'fingerprint is lowercase hex');
+
+  const reordered = [meetings[2], meetings[0], meetings[1]];
+  const r = await computeSybillFingerprint(reordered);
+  assert(a === r, 'meeting order does not affect fingerprint');
+
+  const different = [...meetings, { date: '2026-04-04', title: 'New mtg' }];
+  const d = await computeSybillFingerprint(different);
+  assert(a !== d, 'different meetings → different fingerprint');
+}
+
+// ─── applyClassificationOverrides ───────────────────────────────────────────
+
+import { applyClassificationOverrides } from './lib/classificationOverrides.js';
+
+console.log('\napplyClassificationOverrides (client overrides):');
+
+{
+  const autoAssigned = [
+    { meeting: { id: 1 }, client: 'HubSpot' },
+    { meeting: { id: 2 }, client: 'HubSpot' },
+    { meeting: { id: 3 }, client: 'Athena' },
+  ];
+  const reviewAssigned = [
+    { meeting: { id: 4 }, client: 'Bushel' },
+  ];
+  const internal = [];
+
+  // No overrides → keep all
+  let r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {});
+  assert(r.length === 4, 'no overrides → all 4 kept');
+
+  // KEEP explicitly → no change
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'KEEP' } },
+  });
+  assert(r.length === 4 && r.filter((a) => a.client === 'HubSpot').length === 2,
+    'KEEP retains the original group');
+
+  // SKIP → drops the group
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'SKIP' } },
+  });
+  assert(r.length === 2, 'SKIP drops 2 HubSpot meetings → 2 remain');
+  assert(!r.some((a) => a.client === 'HubSpot'), 'no HubSpot remains after SKIP');
+
+  // SWITCH → consolidates into existing client
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'SWITCH', target: 'Athena' } },
+  });
+  assert(r.filter((a) => a.client === 'Athena').length === 3,
+    'SWITCH HubSpot → Athena: 1 + 2 = 3 Athena rows');
+  assert(!r.some((a) => a.client === 'HubSpot'), 'HubSpot removed after SWITCH');
+
+  // RENAME → relabels group to a new typed name
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'RENAME', target: 'HubSpot Inc' } },
+  });
+  assert(r.filter((a) => a.client === 'HubSpot Inc').length === 2,
+    'RENAME relabels 2 HubSpot → HubSpot Inc');
+  assert(!r.some((a) => a.client === 'HubSpot'), 'original name gone after RENAME');
+
+  // RENAME with empty target → falls back to original (don't silently lose meetings)
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'RENAME', target: '' } },
+  });
+  assert(r.filter((a) => a.client === 'HubSpot').length === 2,
+    'RENAME with empty target falls back to original client name');
+
+  // Multiple overrides at once
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: {
+      HubSpot: { action: 'SKIP' },
+      Bushel: { action: 'RENAME', target: 'Bushel Co' },
+    },
+  });
+  assert(r.length === 2, 'SKIP + RENAME applied together → 2 rows');
+  assert(r.find((a) => a.client === 'Bushel Co'), 'Bushel renamed to Bushel Co');
+  assert(r.find((a) => a.client === 'Athena'), 'untouched group preserved');
+}
+
+console.log('\napplyClassificationOverrides (internal/reason overrides):');
+
+{
+  const autoAssigned = [{ meeting: { id: 1 }, client: 'Athena' }];
+  const reviewAssigned = [];
+  const internal = [
+    { meeting: { id: 10 }, reason: 'all-bm' },
+    { meeting: { id: 11 }, reason: 'all-bm' },
+    { meeting: { id: 12 }, reason: 'all-personal' },
+    { meeting: { id: 13 }, reason: 'mixed-bm-personal' },
+  ];
+
+  // Default — internal stays dropped
+  let r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {});
+  assert(r.length === 1, 'with no reason overrides, internal meetings drop (1 remains)');
+  assert(r[0].client === 'Athena', 'only Athena auto-assigned survives');
+
+  // Explicit KEEP on a reason → still drops
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: { 'all-bm': { action: 'KEEP' } },
+  });
+  assert(r.length === 1, 'KEEP keeps internal dropped (default)');
+
+  // ASSIGN to an existing client → resurrects all meetings in that reason group
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: { 'all-personal': { action: 'ASSIGN', target: 'NewProspect' } },
+  });
+  assert(r.length === 2, 'ASSIGN all-personal → 1 Athena + 1 resurrected = 2');
+  assert(r.some((a) => a.client === 'NewProspect'), 'resurrected meeting assigned to NewProspect');
+
+  // ASSIGN with empty target falls back (KEEP semantics, no resurrection)
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: { 'all-bm': { action: 'ASSIGN', target: '' } },
+  });
+  assert(r.length === 1, 'ASSIGN with empty target safely drops (1 remains)');
+
+  // Multiple reason groups can be resurrected to different targets
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: {
+      'all-bm': { action: 'ASSIGN', target: 'InternalProject' },
+      'mixed-bm-personal': { action: 'ASSIGN', target: 'Athena' },
+    },
+  });
+  assert(r.length === 4, '2 all-bm + 1 mixed + 1 auto-Athena = 4');
+  assert(r.filter((a) => a.client === 'InternalProject').length === 2,
+    'both all-bm meetings resurrected to InternalProject');
+  assert(r.filter((a) => a.client === 'Athena').length === 2,
+    'Athena now has 1 auto + 1 resurrected mixed = 2');
+}
+
+// Classifier sub-reason coverage
+import { classifyMeeting as cm } from '../src/lib/classifier.js';
+console.log('\nclassifier internal sub-reasons:');
+{
+  // Sybill attendee format is "Name (domain.tld)" — parens at end.
+
+  // All-BM: every attendee @blumountain.me
+  const bm = cm({
+    title: 'BM Standup',
+    attendees: 'Alice Smith (blumountain.me), Bob Jones (blumountain.me)',
+  });
+  assert(bm.status === 'internal' && bm.reason === 'all-bm',
+    `all @blumountain.me → reason 'all-bm' (got ${bm.status}/${bm.reason})`);
+
+  // All-personal: every attendee on a personal domain
+  const personal = cm({
+    title: 'Coffee chat',
+    attendees: 'Carol Lee (gmail.com), Dave Patel (yahoo.com)',
+  });
+  assert(personal.status === 'internal' && personal.reason === 'all-personal',
+    `all gmail/yahoo → reason 'all-personal' (got ${personal.status}/${personal.reason})`);
+
+  // Mixed: BM + personal, no business attendees
+  const mixed = cm({
+    title: 'Demo prep',
+    attendees: 'Alice Smith (blumountain.me), Eve Doe (gmail.com)',
+  });
+  assert(mixed.status === 'internal' && mixed.reason === 'mixed-bm-personal',
+    `BM + personal → reason 'mixed-bm-personal' (got ${mixed.status}/${mixed.reason})`);
+}
+
+// ─── aiSybillClassifier ─────────────────────────────────────────────────────
+
+import {
+  buildSystemPrompt,
+  buildUserMessage,
+  extractClient,
+  classifyAllMeetings,
+  setFetchOverride as setAiFetchOverride,
+} from './lib/aiSybillClassifier.js';
+import { KNOWN_CLIENTS } from '../src/lib/classifier.js';
+
+console.log('\naiSybillClassifier buildSystemPrompt:');
+{
+  const prompt = buildSystemPrompt();
+  assert(prompt.includes('Blu Mountain'), 'mentions Blu Mountain');
+  assert(prompt.includes('Sonnet') === false, 'no model name in prompt body (sent in request)');
+  for (const c of KNOWN_CLIENTS) {
+    assert(prompt.includes(c), `prompt lists known client '${c}'`);
+  }
+  assert(prompt.includes('Title aliases'), 'prompt has aliases section');
+  assert(prompt.includes('BluSky Restoration') || prompt.includes('Blu Sky'),
+    'alias canonical surfaces in prompt');
+  assert(prompt.includes('"client":'), 'prompt specifies JSON output shape');
+  assert(prompt.includes('blumountain.me'), 'prompt warns about internal-team domain');
+}
+
+console.log('\naiSybillClassifier buildUserMessage:');
+{
+  const msg = buildUserMessage({ title: 'Athena Q2', attendees: 'a@athena.com' });
+  assert(msg.includes('Athena Q2'), 'user message includes title');
+  assert(msg.includes('a@athena.com'), 'user message includes attendees');
+  const empty = buildUserMessage({});
+  assert(empty.includes('(untitled)') && empty.includes('(none)'),
+    'empty meeting falls back to placeholders');
+}
+
+console.log('\naiSybillClassifier extractClient:');
+{
+  assert(extractClient('{"client":"Athena"}') === 'Athena', 'parses known client');
+  assert(extractClient('{"client": null}') === null, 'parses null');
+  assert(extractClient('{"client":"NotAClient"}') === null,
+    'rejects unknown client names (not on the list)');
+  assert(extractClient('garbage') === null, 'returns null for garbage');
+  assert(extractClient('') === null, 'returns null for empty string');
+  // Regex fallback for malformed-but-near JSON
+  assert(extractClient('Here you go: {"client":"Athena"}.') === 'Athena',
+    'regex fallback handles prose-wrapped JSON');
+  assert(extractClient('{"client": "Athena", "extra": 1}') === 'Athena',
+    'tolerates extra JSON fields');
+}
+
+console.log('\naiSybillClassifier classifyAllMeetings:');
+{
+  // Mock fetch returns a canned response per meeting based on its title.
+  const calls = [];
+  setAiFetchOverride(async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    const userText = body.messages[0].content;
+    calls.push({ url, model: body.model, system: body.system, user: userText });
+    let pick = null;
+    if (userText.includes('Athena')) pick = 'Athena';
+    else if (userText.includes('Bushel')) pick = 'Bushel';
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        content: [{ type: 'text', text: JSON.stringify({ client: pick }) }],
+      }),
+      text: async () => '',
+    };
+  });
+
+  const meetings = [
+    { title: 'Athena Q2 review', attendees: 'a@athena.com' },
+    { title: 'Bushel sync', attendees: 'b@bushel.ag' },
+    { title: 'Mystery meeting', attendees: 'x@example.com' },
+  ];
+
+  const progressEvents = [];
+  const results = await classifyAllMeetings(
+    'sk-ant-fake',
+    meetings,
+    (done, total) => progressEvents.push({ done, total }),
+    2,
+  );
+
+  assert(results.length === 3, '3 meetings classified');
+  assert(results[0].client === 'Athena', 'meeting 0 → Athena');
+  assert(results[1].client === 'Bushel', 'meeting 1 → Bushel');
+  assert(results[2].client === 'Unknown', 'meeting 2 (null from AI) → "Unknown" fallback');
+  assert(results[0].meeting === meetings[0], 'meeting reference preserved');
+  assert(calls.length === 3, '3 fetch calls made');
+  assert(calls[0].model === 'claude-sonnet-4-6', 'uses Sonnet 4.6');
+  assert(Array.isArray(calls[0].system) && calls[0].system[0].cache_control?.type === 'ephemeral',
+    'system prompt is sent as a block with cache_control:ephemeral');
+  assert(progressEvents.length === 3, 'onProgress fired once per meeting');
+  assert(progressEvents.at(-1).done === 3 && progressEvents.at(-1).total === 3,
+    'final progress is N/N');
+
+  setAiFetchOverride(null);
+}
+
+console.log('\naiSybillClassifier handles per-meeting failure:');
+{
+  let calls = 0;
+  setAiFetchOverride(async () => {
+    calls++;
+    if (calls === 2) {
+      return { ok: false, status: 500, json: async () => ({}), text: async () => 'boom' };
+    }
+    return {
+      ok: true, status: 200,
+      json: async () => ({ content: [{ type: 'text', text: '{"client":"Athena"}' }] }),
+      text: async () => '',
+    };
+  });
+
+  const meetings = [
+    { title: 'm0', attendees: 'a' },
+    { title: 'm1', attendees: 'b' },
+    { title: 'm2', attendees: 'c' },
+  ];
+  const results = await classifyAllMeetings('sk-ant-fake', meetings, null, 1);
+  assert(results.length === 3, 'all 3 results returned despite the failure');
+  const unknownCount = results.filter((r) => r.client === 'Unknown').length;
+  assert(unknownCount === 1, "1 meeting fell back to 'Unknown' on per-meeting error");
+  assert(results.filter((r) => r.client === 'Athena').length === 2,
+    'other 2 meetings classified normally');
+
+  setAiFetchOverride(null);
 }
 
 // ─── summary ────────────────────────────────────────────────────────────────

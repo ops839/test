@@ -99,7 +99,6 @@ export async function wipeTable(baseId, tableName, pat, onProgress) {
   do {
     const url = new URL(`${API_BASE}/${baseId}/${encodeURIComponent(tableName)}`);
     url.searchParams.set('pageSize', '100');
-    url.searchParams.set('fields[]', '');
     if (offset) url.searchParams.set('offset', offset);
     const data = await request(url.toString(), {
       headers: { Authorization: `Bearer ${pat}` },
@@ -142,7 +141,9 @@ export async function insertRecords(baseId, tableName, rows, pat, onProgress) {
   return inserted;
 }
 
-// Required v2 schema columns each client table must have.
+// Required v2 schema columns each client table must have. Used by preflight
+// to verify *existing* tables — name-only list so adding columns here
+// doesn't silently change auto-create behavior.
 export const REQUIRED_COLUMNS = [
   'Engagement Date',
   'Type of Engagement',
@@ -152,3 +153,33 @@ export const REQUIRED_COLUMNS = [
   'Action Items',
   'Slack Message',
 ];
+
+// Field schema sent to the create-table endpoint when auto-creating a missing
+// client table. Includes 'Source' on top of the v2 schema. 'Meeting Name'
+// is first so it becomes the primary field in Airtable.
+export const CREATE_TABLE_FIELDS = [
+  { name: 'Meeting Name', type: 'singleLineText' },
+  { name: 'Engagement Date', type: 'date', options: { dateFormat: { name: 'iso' } } },
+  { name: 'Type of Engagement', type: 'singleLineText' },
+  { name: 'Attendees', type: 'multilineText' },
+  { name: 'Summary', type: 'multilineText' },
+  { name: 'Action Items', type: 'multilineText' },
+  { name: 'Slack Message', type: 'multilineText' },
+  { name: 'Source', type: 'singleLineText' },
+];
+
+// Create a new client table in the base. Requires the PAT to have
+// schema.bases:write scope. Returns the parsed table object on success.
+export async function createTable(baseId, tableName, pat) {
+  return await request(`${API_BASE}/meta/bases/${baseId}/tables`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${pat}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: tableName,
+      fields: CREATE_TABLE_FIELDS,
+    }),
+  });
+}
