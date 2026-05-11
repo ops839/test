@@ -832,6 +832,137 @@ console.log('\nclassifier internal sub-reasons:');
     `BM + personal → reason 'mixed-bm-personal' (got ${mixed.status}/${mixed.reason})`);
 }
 
+// ─── aiSybillClassifier ─────────────────────────────────────────────────────
+
+import {
+  buildSystemPrompt,
+  buildUserMessage,
+  extractClient,
+  classifyAllMeetings,
+  setFetchOverride as setAiFetchOverride,
+} from './lib/aiSybillClassifier.js';
+import { KNOWN_CLIENTS } from '../src/lib/classifier.js';
+
+console.log('\naiSybillClassifier buildSystemPrompt:');
+{
+  const prompt = buildSystemPrompt();
+  assert(prompt.includes('Blu Mountain'), 'mentions Blu Mountain');
+  assert(prompt.includes('Sonnet') === false, 'no model name in prompt body (sent in request)');
+  for (const c of KNOWN_CLIENTS) {
+    assert(prompt.includes(c), `prompt lists known client '${c}'`);
+  }
+  assert(prompt.includes('Title aliases'), 'prompt has aliases section');
+  assert(prompt.includes('BluSky Restoration') || prompt.includes('Blu Sky'),
+    'alias canonical surfaces in prompt');
+  assert(prompt.includes('"client":'), 'prompt specifies JSON output shape');
+  assert(prompt.includes('blumountain.me'), 'prompt warns about internal-team domain');
+}
+
+console.log('\naiSybillClassifier buildUserMessage:');
+{
+  const msg = buildUserMessage({ title: 'Athena Q2', attendees: 'a@athena.com' });
+  assert(msg.includes('Athena Q2'), 'user message includes title');
+  assert(msg.includes('a@athena.com'), 'user message includes attendees');
+  const empty = buildUserMessage({});
+  assert(empty.includes('(untitled)') && empty.includes('(none)'),
+    'empty meeting falls back to placeholders');
+}
+
+console.log('\naiSybillClassifier extractClient:');
+{
+  assert(extractClient('{"client":"Athena"}') === 'Athena', 'parses known client');
+  assert(extractClient('{"client": null}') === null, 'parses null');
+  assert(extractClient('{"client":"NotAClient"}') === null,
+    'rejects unknown client names (not on the list)');
+  assert(extractClient('garbage') === null, 'returns null for garbage');
+  assert(extractClient('') === null, 'returns null for empty string');
+  // Regex fallback for malformed-but-near JSON
+  assert(extractClient('Here you go: {"client":"Athena"}.') === 'Athena',
+    'regex fallback handles prose-wrapped JSON');
+  assert(extractClient('{"client": "Athena", "extra": 1}') === 'Athena',
+    'tolerates extra JSON fields');
+}
+
+console.log('\naiSybillClassifier classifyAllMeetings:');
+{
+  // Mock fetch returns a canned response per meeting based on its title.
+  const calls = [];
+  setAiFetchOverride(async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    const userText = body.messages[0].content;
+    calls.push({ url, model: body.model, system: body.system, user: userText });
+    let pick = null;
+    if (userText.includes('Athena')) pick = 'Athena';
+    else if (userText.includes('Bushel')) pick = 'Bushel';
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        content: [{ type: 'text', text: JSON.stringify({ client: pick }) }],
+      }),
+      text: async () => '',
+    };
+  });
+
+  const meetings = [
+    { title: 'Athena Q2 review', attendees: 'a@athena.com' },
+    { title: 'Bushel sync', attendees: 'b@bushel.ag' },
+    { title: 'Mystery meeting', attendees: 'x@example.com' },
+  ];
+
+  const progressEvents = [];
+  const results = await classifyAllMeetings(
+    'sk-ant-fake',
+    meetings,
+    (done, total) => progressEvents.push({ done, total }),
+    2,
+  );
+
+  assert(results.length === 3, '3 meetings classified');
+  assert(results[0].client === 'Athena', 'meeting 0 → Athena');
+  assert(results[1].client === 'Bushel', 'meeting 1 → Bushel');
+  assert(results[2].client === 'Unknown', 'meeting 2 (null from AI) → "Unknown" fallback');
+  assert(results[0].meeting === meetings[0], 'meeting reference preserved');
+  assert(calls.length === 3, '3 fetch calls made');
+  assert(calls[0].model === 'claude-sonnet-4-6', 'uses Sonnet 4.6');
+  assert(Array.isArray(calls[0].system) && calls[0].system[0].cache_control?.type === 'ephemeral',
+    'system prompt is sent as a block with cache_control:ephemeral');
+  assert(progressEvents.length === 3, 'onProgress fired once per meeting');
+  assert(progressEvents.at(-1).done === 3 && progressEvents.at(-1).total === 3,
+    'final progress is N/N');
+
+  setAiFetchOverride(null);
+}
+
+console.log('\naiSybillClassifier handles per-meeting failure:');
+{
+  let calls = 0;
+  setAiFetchOverride(async () => {
+    calls++;
+    if (calls === 2) {
+      return { ok: false, status: 500, json: async () => ({}), text: async () => 'boom' };
+    }
+    return {
+      ok: true, status: 200,
+      json: async () => ({ content: [{ type: 'text', text: '{"client":"Athena"}' }] }),
+      text: async () => '',
+    };
+  });
+
+  const meetings = [
+    { title: 'm0', attendees: 'a' },
+    { title: 'm1', attendees: 'b' },
+    { title: 'm2', attendees: 'c' },
+  ];
+  const results = await classifyAllMeetings('sk-ant-fake', meetings, null, 1);
+  assert(results.length === 3, 'all 3 results returned despite the failure');
+  const unknownCount = results.filter((r) => r.client === 'Unknown').length;
+  assert(unknownCount === 1, "1 meeting fell back to 'Unknown' on per-meeting error");
+  assert(results.filter((r) => r.client === 'Athena').length === 2,
+    'other 2 meetings classified normally');
+
+  setAiFetchOverride(null);
+}
+
 // ─── summary ────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed + failed} tests: ${passed} passed, ${failed} failed`);

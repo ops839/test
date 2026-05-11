@@ -197,16 +197,20 @@ export default function ClassificationReviewPanel({
           meeting{assignedTotal !== 1 ? 's' : ''} assigned to clients{' '}
           <span className="text-bm-muted">({byClient.size} group{byClient.size !== 1 ? 's' : ''})</span>
         </div>
-        <div className="text-bm-text">
-          <span className="font-medium text-bm-accent">{internalTotal}</span>{' '}
-          meeting{internalTotal !== 1 ? 's' : ''} flagged Internal/Skip{' '}
-          <span className="text-bm-muted">({byReason.size} group{byReason.size !== 1 ? 's' : ''})</span>
-        </div>
-        <div className="text-bm-muted">
-          <span className="font-medium">{reviewedTotal}</span> reviewed from{' '}
-          <span className="font-medium">{uncertainGroupsCount}</span> uncertain group{uncertainGroupsCount !== 1 ? 's' : ''}
-          {' '}(now resolved)
-        </div>
+        {internalTotal > 0 && (
+          <div className="text-bm-text">
+            <span className="font-medium text-bm-accent">{internalTotal}</span>{' '}
+            meeting{internalTotal !== 1 ? 's' : ''} flagged Internal/Skip{' '}
+            <span className="text-bm-muted">({byReason.size} group{byReason.size !== 1 ? 's' : ''})</span>
+          </div>
+        )}
+        {uncertainGroupsCount > 0 && (
+          <div className="text-bm-muted">
+            <span className="font-medium">{reviewedTotal}</span> reviewed from{' '}
+            <span className="font-medium">{uncertainGroupsCount}</span> uncertain group{uncertainGroupsCount !== 1 ? 's' : ''}
+            {' '}(now resolved)
+          </div>
+        )}
         <div className="text-bm-text pt-1 border-t border-bm-border/50 mt-2">
           Total in window: <span className="font-medium text-bm-accent">{grandTotal}</span>
         </div>
@@ -282,7 +286,10 @@ export default function ClassificationReviewPanel({
         )}
       </div>
 
-      {/* Internal/Skip section */}
+      {/* Internal/Skip section — only shown if the upstream classifier produces
+          internal classifications. The AI Sybill classifier never does, so this
+          section is empty (and hidden) under the AI flow. */}
+      {sortedReasons.length > 0 && (
       <div className="space-y-2">
         <h3 className="text-sm font-semibold text-bm-text">
           Flagged as Internal/Skip ({byReason.size})
@@ -292,9 +299,6 @@ export default function ClassificationReviewPanel({
           personal. If any group looks like a real client, resurrect it via
           the dropdown.
         </p>
-        {sortedReasons.length === 0 ? (
-          <p className="text-xs text-bm-muted italic">No Internal/Skip meetings.</p>
-        ) : (
           <div className="max-h-96 overflow-y-auto rounded-lg border border-bm-border">
             <table className="w-full text-sm">
               <thead className="bg-bm-border/50 sticky top-0">
@@ -352,8 +356,8 @@ export default function ClassificationReviewPanel({
               </tbody>
             </table>
           </div>
-        )}
       </div>
+      )}
 
       <div className="flex items-center justify-between">
         <p className="text-xs text-bm-muted">
