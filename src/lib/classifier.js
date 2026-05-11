@@ -319,6 +319,15 @@ export function classifyMeeting(meeting) {
     return { status: 'uncertain', candidateDomain: null, reason: 'unknown-attendee' };
   }
 
-  // 5. All BM or personal → internal.
-  return { status: 'internal' };
+  // 5. All BM or personal → internal. Split into sub-reasons so the
+  //    review UI can group and let the user resurrect mis-classified
+  //    meetings (e.g., a prospect on gmail that should be a real client).
+  const allBm = attendees.every((a) => a.isBm);
+  const allPersonal = attendees.every((a) => a.isPersonal && !a.isBm);
+  const reason = allBm
+    ? 'all-bm'
+    : allPersonal
+      ? 'all-personal'
+      : 'mixed-bm-personal';
+  return { status: 'internal', reason };
 }

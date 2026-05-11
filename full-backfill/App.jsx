@@ -19,6 +19,7 @@ export default function App() {
   // ── Sybill classification (Phase 3) ─────────────────────────────────────
   const [sybillMeetings, setSybillMeetings] = useState(null);
   const [sybillAutoAssigned, setSybillAutoAssigned] = useState(null);
+  const [sybillInternal, setSybillInternal] = useState(null);
   const [sybillGroups, setSybillGroups] = useState(null);
   const [sybillReviewAssigned, setSybillReviewAssigned] = useState(null);
   const [sybillRows, setSybillRows] = useState(null);
@@ -37,6 +38,7 @@ export default function App() {
     setCutoffStats((prev) => ({ ...prev, sybillTotal: totalCount, sybillDropped: droppedCount }));
     setSybillMeetings(meetings);
     setSybillAutoAssigned(null);
+    setSybillInternal(null);
     setSybillGroups(null);
     setSybillReviewAssigned(null);
     setSybillRows(null);
@@ -44,16 +46,19 @@ export default function App() {
     // Classification is synchronous — run inline to avoid cascading effects.
     const autoAssigned = [];
     const uncertain = [];
+    const internal = [];
     for (const meeting of meetings) {
       const r = classifyMeeting(meeting);
       if (r.status === 'client') {
         autoAssigned.push({ meeting, client: r.client });
       } else if (r.status === 'uncertain') {
         uncertain.push({ ...meeting, candidateDomain: r.candidateDomain });
+      } else if (r.status === 'internal') {
+        internal.push({ meeting, reason: r.reason });
       }
-      // 'internal': silently drop
     }
     setSybillAutoAssigned(autoAssigned);
+    setSybillInternal(internal);
     if (uncertain.length > 0) {
       setSybillGroups(groupUncertain(uncertain));
     } else {
@@ -140,6 +145,8 @@ export default function App() {
             <ClassificationReviewPanel
               autoAssigned={sybillAutoAssigned}
               reviewAssigned={sybillReviewAssigned}
+              internal={sybillInternal ?? []}
+              uncertainGroupsCount={sybillGroups?.length ?? 0}
               meetings={sybillMeetings}
               onComplete={handleClassificationsConfirmed}
             />

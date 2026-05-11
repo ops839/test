@@ -685,7 +685,7 @@ console.log('\nsybillFingerprint:');
 
 import { applyClassificationOverrides } from './lib/classificationOverrides.js';
 
-console.log('\napplyClassificationOverrides:');
+console.log('\napplyClassificationOverrides (client overrides):');
 
 {
   const autoAssigned = [
@@ -696,52 +696,140 @@ console.log('\napplyClassificationOverrides:');
   const reviewAssigned = [
     { meeting: { id: 4 }, client: 'Bushel' },
   ];
+  const internal = [];
 
   // No overrides → keep all
-  let r = applyClassificationOverrides(autoAssigned, reviewAssigned, {});
+  let r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {});
   assert(r.length === 4, 'no overrides → all 4 kept');
 
   // KEEP explicitly → no change
-  r = applyClassificationOverrides(autoAssigned, reviewAssigned, { HubSpot: { action: 'KEEP' } });
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'KEEP' } },
+  });
   assert(r.length === 4 && r.filter((a) => a.client === 'HubSpot').length === 2,
     'KEEP retains the original group');
 
   // SKIP → drops the group
-  r = applyClassificationOverrides(autoAssigned, reviewAssigned, { HubSpot: { action: 'SKIP' } });
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'SKIP' } },
+  });
   assert(r.length === 2, 'SKIP drops 2 HubSpot meetings → 2 remain');
   assert(!r.some((a) => a.client === 'HubSpot'), 'no HubSpot remains after SKIP');
 
   // SWITCH → consolidates into existing client
-  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
-    HubSpot: { action: 'SWITCH', target: 'Athena' },
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'SWITCH', target: 'Athena' } },
   });
   assert(r.filter((a) => a.client === 'Athena').length === 3,
     'SWITCH HubSpot → Athena: 1 + 2 = 3 Athena rows');
   assert(!r.some((a) => a.client === 'HubSpot'), 'HubSpot removed after SWITCH');
 
   // RENAME → relabels group to a new typed name
-  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
-    HubSpot: { action: 'RENAME', target: 'HubSpot Inc' },
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'RENAME', target: 'HubSpot Inc' } },
   });
   assert(r.filter((a) => a.client === 'HubSpot Inc').length === 2,
     'RENAME relabels 2 HubSpot → HubSpot Inc');
   assert(!r.some((a) => a.client === 'HubSpot'), 'original name gone after RENAME');
 
   // RENAME with empty target → falls back to original (don't silently lose meetings)
-  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
-    HubSpot: { action: 'RENAME', target: '' },
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: { HubSpot: { action: 'RENAME', target: '' } },
   });
   assert(r.filter((a) => a.client === 'HubSpot').length === 2,
     'RENAME with empty target falls back to original client name');
 
   // Multiple overrides at once
-  r = applyClassificationOverrides(autoAssigned, reviewAssigned, {
-    HubSpot: { action: 'SKIP' },
-    Bushel: { action: 'RENAME', target: 'Bushel Co' },
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    clients: {
+      HubSpot: { action: 'SKIP' },
+      Bushel: { action: 'RENAME', target: 'Bushel Co' },
+    },
   });
   assert(r.length === 2, 'SKIP + RENAME applied together → 2 rows');
   assert(r.find((a) => a.client === 'Bushel Co'), 'Bushel renamed to Bushel Co');
   assert(r.find((a) => a.client === 'Athena'), 'untouched group preserved');
+}
+
+console.log('\napplyClassificationOverrides (internal/reason overrides):');
+
+{
+  const autoAssigned = [{ meeting: { id: 1 }, client: 'Athena' }];
+  const reviewAssigned = [];
+  const internal = [
+    { meeting: { id: 10 }, reason: 'all-bm' },
+    { meeting: { id: 11 }, reason: 'all-bm' },
+    { meeting: { id: 12 }, reason: 'all-personal' },
+    { meeting: { id: 13 }, reason: 'mixed-bm-personal' },
+  ];
+
+  // Default — internal stays dropped
+  let r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {});
+  assert(r.length === 1, 'with no reason overrides, internal meetings drop (1 remains)');
+  assert(r[0].client === 'Athena', 'only Athena auto-assigned survives');
+
+  // Explicit KEEP on a reason → still drops
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: { 'all-bm': { action: 'KEEP' } },
+  });
+  assert(r.length === 1, 'KEEP keeps internal dropped (default)');
+
+  // ASSIGN to an existing client → resurrects all meetings in that reason group
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: { 'all-personal': { action: 'ASSIGN', target: 'NewProspect' } },
+  });
+  assert(r.length === 2, 'ASSIGN all-personal → 1 Athena + 1 resurrected = 2');
+  assert(r.some((a) => a.client === 'NewProspect'), 'resurrected meeting assigned to NewProspect');
+
+  // ASSIGN with empty target falls back (KEEP semantics, no resurrection)
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: { 'all-bm': { action: 'ASSIGN', target: '' } },
+  });
+  assert(r.length === 1, 'ASSIGN with empty target safely drops (1 remains)');
+
+  // Multiple reason groups can be resurrected to different targets
+  r = applyClassificationOverrides(autoAssigned, reviewAssigned, internal, {
+    reasons: {
+      'all-bm': { action: 'ASSIGN', target: 'InternalProject' },
+      'mixed-bm-personal': { action: 'ASSIGN', target: 'Athena' },
+    },
+  });
+  assert(r.length === 4, '2 all-bm + 1 mixed + 1 auto-Athena = 4');
+  assert(r.filter((a) => a.client === 'InternalProject').length === 2,
+    'both all-bm meetings resurrected to InternalProject');
+  assert(r.filter((a) => a.client === 'Athena').length === 2,
+    'Athena now has 1 auto + 1 resurrected mixed = 2');
+}
+
+// Classifier sub-reason coverage
+import { classifyMeeting as cm } from '../src/lib/classifier.js';
+console.log('\nclassifier internal sub-reasons:');
+{
+  // Sybill attendee format is "Name (domain.tld)" — parens at end.
+
+  // All-BM: every attendee @blumountain.me
+  const bm = cm({
+    title: 'BM Standup',
+    attendees: 'Alice Smith (blumountain.me), Bob Jones (blumountain.me)',
+  });
+  assert(bm.status === 'internal' && bm.reason === 'all-bm',
+    `all @blumountain.me → reason 'all-bm' (got ${bm.status}/${bm.reason})`);
+
+  // All-personal: every attendee on a personal domain
+  const personal = cm({
+    title: 'Coffee chat',
+    attendees: 'Carol Lee (gmail.com), Dave Patel (yahoo.com)',
+  });
+  assert(personal.status === 'internal' && personal.reason === 'all-personal',
+    `all gmail/yahoo → reason 'all-personal' (got ${personal.status}/${personal.reason})`);
+
+  // Mixed: BM + personal, no business attendees
+  const mixed = cm({
+    title: 'Demo prep',
+    attendees: 'Alice Smith (blumountain.me), Eve Doe (gmail.com)',
+  });
+  assert(mixed.status === 'internal' && mixed.reason === 'mixed-bm-personal',
+    `BM + personal → reason 'mixed-bm-personal' (got ${mixed.status}/${mixed.reason})`);
 }
 
 // ─── summary ────────────────────────────────────────────────────────────────
